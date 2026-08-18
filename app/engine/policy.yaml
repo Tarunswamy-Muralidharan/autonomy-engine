@@ -1,0 +1,57 @@
+# AutonomyGate policy — the single source of governance truth.
+# Everything the engine enforces is declared here, not hardcoded.
+# Principle: the scorer ADVISES, this file RULES.
+
+weights:
+  reversibility: 0.35
+  data_scope: 0.25
+  regulatory: 0.20
+  confidence: 0.20
+
+thresholds:
+  autonomous_below: 30   # total risk <  30  -> execute autonomously
+  review_above: 65       # total risk >  65  -> human review queue
+                         # everything between -> user confirmation
+
+# Reversibility score per tool (0 = fully reversible read, 100 = irreversible)
+reversibility:
+  crm_read: 0
+  crm_search: 5
+  crm_update: 40         # old value is captured, so an update can be restored
+  db_delete: 90          # hard delete
+  send_email: 80         # cannot be unsent
+  export_report: 75      # data leaves the system
+  default: 50            # unknown tools score conservatively
+
+# Regulatory sensitivity per tool target (0 / 60 / 90)
+regulatory:
+  crm_read: 60           # CRM records contain PII
+  crm_search: 60
+  crm_update: 60
+  db_delete: 60
+  send_email: 30         # body may contain PII; lower base, overrides catch specifics
+  export_report: 90      # bulk data export of PII-tagged tables
+  default: 30
+
+# Hard overrides: deterministic rules that BYPASS the scorer entirely.
+# Evaluated top to bottom; first match wins.
+hard_overrides:
+  - name: bulk_delete_always_review
+    tool: db_delete
+    min_affected_count: 101
+    route: REVIEW
+    reason: "Bulk deletion above 100 records always requires human review."
+
+  - name: external_email_review
+    tool: send_email
+    param: to
+    not_matches: '.*@ourcorp\.com$'
+    route: REVIEW
+    reason: "Email to an external domain always requires human review."
+
+  - name: full_export_review
+    tool: export_report
+    param: scope
+    matches: '^(all|\*)$'
+    route: REVIEW
+    reason: "Export of the full dataset always requires human review."
