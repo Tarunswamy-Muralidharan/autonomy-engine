@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AutonomyGate — Graduated Autonomy Engine</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#0f1420; --panel:#1a2130; --line:#2a3346; --text:#e6ebf4;
+          --dim:#8b96ab; --green:#3fb950; --amber:#d29922; --red:#f85149;
+          --blue:#58a6ff; }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--bg); color:var(--text);
+         font:14px/1.5 "Segoe UI", system-ui, sans-serif; padding:24px; }
+  h1 { font-size:20px; } h1 span { color:var(--blue); }
+  .sub { color:var(--dim); margin-bottom:20px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .panel { background:var(--panel); border:1px solid var(--line);
+           border-radius:10px; padding:16px; }
+  .panel h2 { font-size:14px; text-transform:uppercase; letter-spacing:.08em;
+              color:var(--dim); margin-bottom:12px; }
+  .full { grid-column:1 / -1; }
+  input[type=text] { width:70%; padding:9px 12px; background:#0d1117;
+    color:var(--text); border:1px solid var(--line); border-radius:6px; }
+  button { padding:9px 14px; border:0; border-radius:6px; cursor:pointer;
+           font-weight:600; }
+  .run { background:var(--blue); color:#08111f; }
+  .ok  { background:var(--green); color:#08111f; }
+  .no  { background:var(--red); color:#fff; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th { text-align:left; color:var(--dim); font-weight:600; padding:6px 8px;
+       border-bottom:1px solid var(--line); }
+  td { padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  .badge { padding:2px 8px; border-radius:10px; font-size:12px; font-weight:700; }
+  .AUTONOMOUS { background:#12351c; color:var(--green); }
+  .CONFIRM    { background:#3a2d10; color:var(--amber); }
+  .REVIEW     { background:#3d1418; color:var(--red); }
+  .risk { font-family:Consolas, monospace; color:var(--dim); font-size:12px; }
+  .empty { color:var(--dim); font-style:italic; padding:10px 0; }
+  #task-out { margin-top:12px; font-family:Consolas, monospace; font-size:12px;
+              white-space:pre-wrap; color:var(--dim); max-height:180px;
+              overflow-y:auto; }
+</style>
+</head>
+<body>
+<h1>Autonomy<span>Gate</span> — Graduated Autonomy Engine</h1>
+<div class="sub">Every agent action is risk-scored and routed:
+  <span class="badge AUTONOMOUS">AUTONOMOUS</span>
+  <span class="badge CONFIRM">CONFIRM</span>
+  <span class="badge REVIEW">REVIEW</span>
+</div>
+
+<div class="grid">
+  <div class="panel full">
+    <h2>Run the governed agent</h2>
+    <input id="task" type="text"
+           placeholder='e.g. "What plan is customer 1005 on?" / "Update customer 1003 plan to gold" / "Clean up all inactive customers"'>
+    <button class="run" onclick="runTask()">Run task</button>
+    <div id="task-out"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Pending approvals (confirm + review)</h2>
+    <div id="queue"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Live audit log</h2>
+    <div id="audit"></div>
+  </div>
+</div>
+
+<script>
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+async function runTask() {
+  const task = document.getElementById("task").value.trim();
+  if (!task) return;
+  const out = document.getElementById("task-out");
+  out.textContent = "running...";
+  try {
+    const run = await api("/agent/task", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({task})
+    });
+    out.textContent = run.steps.map(s =>
+      `${s.tool}  ->  ${s.route}` +
+      (s.matched_override ? `  [override: ${s.matched_override}]` : "") +
+      `  risk=${s.risk.total}` +
+      (s.result ? `\n  result: ${JSON.stringify(s.result).slice(0, 300)}` :
+                  `\n  held on ticket ${s.ticket_id}`)
+    ).join("\n\n");
+  } catch (e) { out.textContent = "error: " + e.message; }
+  refresh();
+}
+
+async function decide(id, decision) {
+  await api(`/tickets/${id}/decision`, {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({decision, decided_by: "dashboard-user"})
+  }).catch(e => alert(e.message));
+  refresh();
+}
+
+function esc(s) { const d = document.createElement("div");
+  d.textContent = String(s); return d.innerHTML; }
+
+async function refresh() {
+  const q = await api("/queue?status=pending");
+  document.getElementById("queue").innerHTML = q.length === 0
+    ? '<div class="empty">Nothing pending — the agent is fully autonomous right now.</div>'
+    : "<table><tr><th>Tier</th><th>Action</th><th>Risk</th><th></th></tr>" +
+      q.map(t => `<tr>
+        <td><span class="badge ${t.kind === "confirm" ? "CONFIRM" : "REVIEW"}">
+            ${t.kind.toUpperCase()}</span></td>
+        <td>${esc(t.preview)}</td>
+        <td class="risk">${t.risk_total}</td>
+        <td><button class="ok" onclick="decide('${t.ticket_id}','approve')">Approve</button>
+            <button class="no" onclick="decide('${t.ticket_id}','reject')">Reject</button></td>
+      </tr>`).join("") + "</table>";
+
+  const a = await api("/audit?limit=12");
+  document.getElementById("audit").innerHTML = a.length === 0
+    ? '<div class="empty">No actions evaluated yet.</div>'
+    : "<table><tr><th>Tool</th><th>Route</th><th>Risk (rev/scope/reg/conf)</th><th>Outcome</th></tr>" +
+      a.map(r => `<tr>
+        <td>${esc(r.tool)}</td>
+        <td><span class="badge ${r.route}">${r.route}</span>${
+            r.matched_override ? "<div class='risk'>override: " +
+            esc(r.matched_override) + "</div>" : ""}</td>
+        <td class="risk">${r.risk_breakdown.total}
+            (${r.risk_breakdown.reversibility}/${r.risk_breakdown.data_scope}/${
+              r.risk_breakdown.regulatory}/${r.risk_breakdown.confidence})</td>
+        <td>${esc(r.final_outcome)}</td>
+      </tr>`).join("") + "</table>";
+}
+
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>

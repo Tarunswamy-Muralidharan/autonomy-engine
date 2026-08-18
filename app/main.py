@@ -1,23 +1,23 @@
 """AutonomyGate — Graduated Autonomy Engine (Aivar PS-9.1).
 
 FastAPI service that risk-scores agent actions and routes them to
-AUTONOMOUS / CONFIRM / REVIEW, with a persisted audit trail.
+AUTONOMOUS / CONFIRM / REVIEW, with a persisted audit trail, a governed
+sample agent (Bedrock Claude or scripted), and a minimal dashboard.
 """
 from __future__ import annotations
 
 import logging
-import time
-import uuid
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-from .audit.redact import redact_params
+from .agent import tools as agent_tools
+from .agent.support_agent import run_task
 from .engine.calibration import compute_adjustment
-from .engine.router import Route, evaluate_action
 from .engine.scorer import Policy
+from .engine.service import EvaluateRequest, EvaluateResponse, run_evaluation
 from .storage.repo import get_repo
 
 logging.basicConfig(
@@ -27,6 +27,7 @@ logging.basicConfig(
 log = logging.getLogger("autonomygate")
 
 APP_VERSION = "1.0.0"
+STATIC_DIR = Path(__file__).parent.parent / "static"
 
 app = FastAPI(
     title="AutonomyGate",
@@ -36,27 +37,6 @@ app = FastAPI(
 )
 
 policy = Policy()
-
-
-# ---------- models ----------
-
-class EvaluateRequest(BaseModel):
-    agent_id: str
-    session_id: str
-    tool: str
-    params: dict = Field(default_factory=dict)
-    affected_count: int = 1
-    model_confidence: float = Field(0.8, ge=0.0, le=1.0)
-    preview: str = ""          # human-readable "what is about to happen"
-
-
-class EvaluateResponse(BaseModel):
-    action_id: str
-    route: Route
-    risk: dict
-    matched_override: str | None
-    reason: str
-    ticket_id: str | None = None
 
 
 class Decision(BaseModel):
@@ -70,69 +50,27 @@ class OutcomeUpdate(BaseModel):
     decided_by: str = "system"
 
 
-# ---------- core endpoint ----------
+class AgentTask(BaseModel):
+    task: str
+    session_id: str | None = None
+
+
+# ---------- core evaluation API (for ANY external agent) ----------
 
 @app.post("/evaluate", response_model=EvaluateResponse)
 def evaluate(req: EvaluateRequest) -> EvaluateResponse:
-    repo = get_repo()
-    stats = repo.get_calibration(req.tool)
-    adjustment = compute_adjustment(stats)
+    return run_evaluation(policy, req)
 
-    verdict = evaluate_action(
-        policy,
-        tool=req.tool,
-        params=req.params,
-        affected_count=req.affected_count,
-        model_confidence=req.model_confidence,
-        calibration_adjustment=adjustment,
-    )
 
-    action_id = str(uuid.uuid4())
-    ticket_id: str | None = None
+# ---------- the governed sample agent ----------
 
-    if verdict.route in (Route.CONFIRM, Route.REVIEW):
-        ticket_id = str(uuid.uuid4())
-        repo.put_ticket({
-            "ticket_id": ticket_id,
-            "kind": "confirm" if verdict.route is Route.CONFIRM else "review",
-            "ts": time.time(),
-            "action_id": action_id,
-            "agent_id": req.agent_id,
-            "session_id": req.session_id,
-            "tool": req.tool,
-            "risk_total": verdict.risk.total,
-            "preview": req.preview or f"{req.tool}({req.params})",
-        })
-
-    audit_record = {
-        "action_id": action_id,
-        "session_id": req.session_id,
-        "agent_id": req.agent_id,
-        "ts": time.time(),
-        "tool": req.tool,
-        "params_redacted": redact_params(req.params),
-        "affected_count": req.affected_count,
-        "risk_breakdown": verdict.risk.as_dict(),
-        "calibration_adjustment": adjustment,
-        "route": verdict.route.value,
-        "matched_override": verdict.matched_override,
-        "reason": verdict.reason,
-        "ticket_id": ticket_id,
-    }
-    repo.put_audit(audit_record)
-    log.info('{"event": "evaluated", "action_id": "%s", "tool": "%s", '
-             '"route": "%s", "risk": %s, "override": "%s"}',
-             action_id, req.tool, verdict.route.value,
-             verdict.risk.total, verdict.matched_override)
-
-    return EvaluateResponse(
-        action_id=action_id,
-        route=verdict.route,
-        risk=verdict.risk.as_dict(),
-        matched_override=verdict.matched_override,
-        reason=verdict.reason,
-        ticket_id=ticket_id,
-    )
+@app.post("/agent/task")
+def agent_task(body: AgentTask) -> dict:
+    try:
+        return run_task(policy, body.task, body.session_id)
+    except Exception as exc:
+        log.error('{"event": "agent_error", "error": "%s"}', exc)
+        raise HTTPException(502, f"agent failure: {exc}") from exc
 
 
 # ---------- confirmation & review ----------
@@ -160,10 +98,24 @@ def decide_ticket(ticket_id: str, body: Decision) -> dict:
     if updated["kind"] == "confirm":
         repo.update_calibration(updated["tool"], decision)
 
-    outcome = "approved" if decision == "approved" else "denied"
-    repo.update_audit_outcome(updated["action_id"], outcome, body.decided_by)
+    execution_result = None
+    if decision == "approved":
+        # Human said yes -> the held action now actually executes.
+        try:
+            execution_result, _ = agent_tools.execute_tool(
+                updated["tool"], updated.get("params", {}))
+            repo.update_audit_outcome(updated["action_id"], "executed", body.decided_by)
+        except Exception as exc:
+            repo.update_audit_outcome(updated["action_id"], "failed", "system")
+            log.error('{"event": "approved_execution_failed", "ticket": "%s", '
+                      '"error": "%s"}', ticket_id, exc)
+            raise HTTPException(500, f"approved but execution failed: {exc}") from exc
+    else:
+        repo.update_audit_outcome(updated["action_id"], "denied", body.decided_by)
+
     log.info('{"event": "ticket_decided", "ticket_id": "%s", "decision": "%s", '
              '"by": "%s"}', ticket_id, decision, body.decided_by)
+    updated["execution_result"] = execution_result
     return updated
 
 
@@ -197,7 +149,12 @@ def calibration(action_type: str) -> dict:
     return stats
 
 
-# ---------- health ----------
+# ---------- dashboard & health ----------
+
+@app.get("/")
+def dashboard() -> FileResponse:
+    return FileResponse(STATIC_DIR / "index.html")
+
 
 @app.get("/health")
 def health() -> dict:
@@ -206,15 +163,14 @@ def health() -> dict:
         get_repo().list_tickets(status="pending")
     except Exception as exc:  # pragma: no cover
         checks["storage"] = f"error: {exc}"
-    status = "healthy" if all(v == "ok" for v in checks.values()) else "degraded"
+    import os
+    checks["agent_mode"] = os.environ.get("AUTONOMYGATE_AGENT", "scripted")
+    status = "healthy" if checks["storage"] == "ok" else "degraded"
     return {"status": status, "version": APP_VERSION, "checks": checks}
 
-
-# ---------- error handling ----------
 
 @app.exception_handler(Exception)
 async def unhandled(request, exc):  # pragma: no cover
     log.error('{"event": "unhandled_error", "path": "%s", "error": "%s"}',
               request.url.path, exc)
-    from fastapi.responses import JSONResponse
     return JSONResponse(status_code=500, content={"detail": "internal error"})
