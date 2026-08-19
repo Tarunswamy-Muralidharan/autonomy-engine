@@ -1,141 +1,271 @@
 # AutonomyGate — Graduated Autonomy Engine
 
-**🔴 LIVE DEPLOYMENT (AWS):** https://qg37onlhnh.execute-api.us-east-1.amazonaws.com
-(API Gateway → Lambda → DynamoDB, us-east-1 · dashboard at `/` · OpenAPI at `/docs` · health at `/health`)
+**🔴 LIVE ON AWS:** https://qg37onlhnh.execute-api.us-east-1.amazonaws.com
+API Gateway → Lambda → DynamoDB (us-east-1) · dashboard at `/` · OpenAPI at `/docs` · health at `/health`
 
-**Aivar Agentic AI Task — PS-9.1.** A production-deployed governance engine that
-risk-scores every action an AI agent attempts and routes it to the right
-autonomy level — **autonomous execution**, **user confirmation**, or **human
-review** — with a persisted audit trail and adaptive threshold calibration.
+**Aivar Agentic AI Task — PS-9.1.** A deployed governance engine that risk-scores
+every action an AI agent attempts and routes it to the right autonomy level —
+**autonomous execution**, **user confirmation**, or **human review** — with a
+persisted audit trail and adaptive threshold calibration.
 
 ```
-User task -> Agent (Bedrock Claude) -> proposed tool call
-                                            |
-                                            v
-                                   +------------------+
-                                   |   AutonomyGate   |
-                                   |  4-dim risk score|
-                                   |  + hard overrides|
-                                   +--------+---------+
-              +-----------------------------+------------------------------+
-              v                             v                              v
-        AUTONOMOUS                     CONFIRM                         REVIEW
-     executes immediately     preview shown; user approves     human review queue;
-                              or rejects, then executes        approve / reject
-              |                             |                              |
-              +-----------------------------+------------------------------+
-                                            v
-                          append-only, PII-redacted AUDIT LOG (DynamoDB)
+Any agent (sample agent, LangChain, CrewAI, your own loop)
+        |
+        |  proposed tool call
+        v
++---------------------------+
+|        AutonomyGate       |
+|  hard overrides  (policy) |   <- deterministic red lines, checked FIRST
+|  4-dimension risk score   |   <- advisory, bounded
+|  calibration (asymmetric) |   <- trust may open, never rescue
++------------+--------------+
+             |
+   +---------+---------+-------------------+
+   v                   v                   v
+AUTONOMOUS          CONFIRM              REVIEW
+executes now    preview + user OK    human review queue
+   |                   |                   |
+   +---------+---------+-------------------+
+             v
+   append-only, PII-redacted AUDIT LOG (DynamoDB)
 ```
+
+---
 
 ## How risk is scored
 
-Each proposed action gets a 0–100 score: weighted sum of four dimensions
-(weights live in `app/engine/policy.yaml`, not code):
+Each proposed action gets a 0–100 score — a weighted sum of four dimensions.
+Weights, thresholds, and rules live in `app/engine/policy.yaml`, not in code, so
+a risk owner can change governance without touching Python.
 
 | Dimension | Weight | Source |
 |---|---|---|
-| Reversibility | 0.35 | policy lookup per tool (read=0 … hard delete=90) |
-| Data scope | 0.25 | log-scale on affected record count |
-| Regulatory | 0.20 | policy lookup (PII/financial tags) |
-| Model confidence | 0.20 | the LLM's own structured self-assessment, `(1-conf)*100` |
+| Reversibility | 0.35 | policy lookup per tool (read = 0 … hard delete = 90) |
+| Data scope | 0.25 | log-scale on the **observed** blast radius |
+| Regulatory | 0.20 | policy lookup (PII / financial tags) |
+| Model confidence | 0.20 | the LLM's own self-assessment, `(1 − conf) × 100`, **floored** |
 
-Thresholds: `< 30` autonomous, `30–65` confirm, `> 65` review.
+Thresholds: `< 30` autonomous · `30–65` confirm · `> 65` review.
 
-**Hard overrides come first.** Rules in `policy.yaml` (bulk delete > 100
-records, email to external domain, full data export) route deterministically
-and *bypass scoring entirely*. The scorer advises; the policy rules. A
-probabilistic score can never overrule an explicit governance rule.
+**Hard overrides come first.** Rules in `policy.yaml` — bulk delete > 100
+records, any external email recipient, full or large data export, bulk update —
+route deterministically and *bypass scoring entirely*. **The scorer advises; the
+policy rules.** A probabilistic score can never overrule an explicit governance
+rule, and the policy file is validated at startup so a typo can't silently
+disable a red line.
+
+Three properties exist specifically because adversarial testing broke their
+absence (see [Security](#security--adversarial-testing)):
+
+- **Blast radius is derived, not trusted.** The engine inspects the payload and
+  governs on `max(declared, observed)`, so an agent cannot claim it is touching
+  one record while passing five thousand ids.
+- **Model confidence is floored.** A self-reported `1.0` cannot, on its own,
+  move an action into a lower tier.
+- **Calibration is asymmetric.** Earned trust may open the autonomous door; it
+  may never pull an action out of human review.
 
 **Adaptive calibration (bonus — full spec).** Reviewers have three actions:
 **approve** (execute as proposed), **reject** (block), and **modify** (execute
-with human-edited parameters — the edit replaces the agent's proposal). If
-humans cleanly approve a CONFIRM-tier action type ≥ 90% of the time (min 10
-samples), its risk drifts down −10 toward autonomous; if they reject **or
-modify** it ≥ 40% of the time, it drifts up +15 — a modification means the
-agent's proposals for that action type aren't trustworthy as-is. Capped at
-±20 and always subordinate to hard overrides — calibration tunes the gray
-zone, never the red lines.
+with human-edited parameters). If humans cleanly approve a CONFIRM-tier action
+type ≥ 90% of the time (minimum 10 decisions), its risk drifts down −10 toward
+autonomous; if they reject **or modify** it ≥ 40% of the time it drifts up +15 —
+a modification means that action type's proposals aren't trustworthy as-is.
+Clamped at ±20, subordinate to hard overrides, and reproducible from the audit
+trail: calibration tunes the gray zone, never the red lines.
+
+---
+
+## Governing *any* agent
+
+The engine is a standalone policy decision point. `POST /evaluate` is
+framework-agnostic — the bundled sample agent is just one caller.
+
+`examples/govern_any_agent.py` adds governance to any tool function in any
+framework with a decorator:
+
+```python
+@governed(tool="send_slack_message", affected=lambda p: 1)
+def send_slack_message(channel: str, text: str):
+    ...
+```
+
+- **AUTONOMOUS** → your function runs immediately.
+- **CONFIRM / REVIEW** → `GovernanceHold` is raised with the ticket id; a human
+  decides in the dashboard, then your harness calls `execute_if_approved()`.
+
+Tools the engine doesn't host are **never executed by the engine**. On approval
+it records `approved_pending_external_execution` and hands control back — the
+calling stack executes and reports the outcome. Verified end-to-end against the
+live deployment with a tool the engine had never seen.
+
+---
 
 ## Governed sample workload
 
-A support-ops agent (Amazon Bedrock, Claude, Converse API tool-calling) over a
-seeded mock CRM (400 customers). Every tool schema carries a required
-`confidence` field the model must fill — that self-assessment feeds the
-scorer. Every proposed call goes through `/evaluate` *before* execution; held
-actions execute only when a human approves the ticket.
+A support-ops agent over a seeded mock CRM (400 customers). Every tool schema
+carries a required `confidence` field the model must fill; every proposed call
+goes through the engine *before* execution; held actions execute only after a
+human decision.
 
-Agent modes (`AUTONOMYGATE_AGENT`): `bedrock` (production) or `scripted`
-(deterministic offline planner — used by tests, so the governance path is
-provable without any LLM dependency).
+`AUTONOMYGATE_AGENT` selects the planner:
+
+| Mode | Model | Purpose |
+|---|---|---|
+| `groq` | Llama via Groq (OpenAI-compatible) | **currently live**; self-heals when a model is retired (404 → live catalog) and backs off on 429 |
+| `bedrock` | Amazon Bedrock (Nova / Claude, Converse API) | one env var away; blocked only by this new AWS account's Bedrock verification hold |
+| `scripted` | deterministic keyword planner | offline; lets the test suite prove the governance path with no LLM dependency |
+
+---
 
 ## API
 
-| Endpoint | Purpose |
-|---|---|
-| `POST /evaluate` | Score + route one proposed action (usable by ANY agent, not just the sample) |
-| `POST /agent/task` | Give the governed sample agent a natural-language task |
-| `GET /queue` · `POST /tickets/{id}/decision` | Pending approvals; approve/reject (approve executes the held action) |
-| `GET /audit` | Query the audit log by session/agent |
-| `GET /calibration/{action_type}` | Inspect calibration stats + current adjustment |
-| `GET /health` | Storage + agent-mode health |
-| `GET /` | Live dashboard (task runner, approval queue, audit feed) |
-| `GET /docs` | OpenAPI docs (auto-generated) |
+The **proposal plane is open** (any agent may ask for a decision). The **review
+plane is authenticated** — a caller must not be able to approve its own action.
 
-## Run locally (no AWS needed)
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `POST /evaluate` | open | Score + route one proposed action |
+| `POST /agent/task` | open | Give the sample agent a natural-language task |
+| `GET /queue` | **reviewer** | Pending approvals |
+| `GET /tickets/{id}` · `POST /tickets/{id}/decision` | **reviewer** | approve / reject / modify |
+| `POST /audit/{action_id}/outcome` | **reviewer** | Report an externally-executed outcome (write-once) |
+| `GET /audit` | open | Query the audit log by session / agent |
+| `GET /calibration/{action_type}` | open | Calibration stats + current adjustment |
+| `GET /health` · `GET /` · `GET /docs` | open | Health, dashboard, OpenAPI |
+
+Reviewer auth is a bearer token (`AUTONOMYGATE_REVIEWER_TOKEN`, generated at
+deploy). The dashboard has a sign-in box. In production this becomes an API
+Gateway JWT authorizer with per-reviewer Cognito identities — the token is the
+minimum viable control that closes self-approval today.
+
+---
+
+## Run locally (no AWS, no keys)
 
 ```bash
 pip install -r requirements.txt
-pytest              # 15 tests incl. every PS-9.1 success criterion
+python -m pytest            # 43 tests
 uvicorn app.main:app --port 8080
-# open http://localhost:8080  — scripted agent + SQLite by default
+# http://localhost:8080  — scripted agent + SQLite, review plane open in dev
 ```
 
-## Deploy to AWS (App Runner + DynamoDB + Bedrock)
+## Deploy to AWS
 
 ```bash
-# 1. Create tables
-AWS_REGION=ap-south-1 python scripts/create_tables.py
-
-# 2. Build & push image
-docker build -t autonomygate .
-aws ecr create-repository --repository-name autonomygate
-docker tag autonomygate:latest <acct>.dkr.ecr.<region>.amazonaws.com/autonomygate:latest
-docker push <acct>.dkr.ecr.<region>.amazonaws.com/autonomygate:latest
-
-# 3. App Runner service (console or CLI): port 8080, health check /health,
-#    instance role with DynamoDB (the 3 autonomygate-* tables) +
-#    bedrock:InvokeModel permissions.
-#    Env: AUTONOMYGATE_STORAGE=dynamo  AUTONOMYGATE_AGENT=bedrock
-#         AWS_REGION=<region>  AUTONOMYGATE_BEDROCK_MODEL=<claude model id>
+python scripts/create_tables.py     # 3 on-demand DynamoDB tables
+python scripts/deploy_lambda.py     # role + function + public API, no Docker
 ```
 
-## Production deployment (what is actually running)
+The deploy script builds a linux wheel package, provisions a **least-privilege**
+role, reconciles configuration on every redeploy (preserving secrets), and
+generates a reviewer token on first deploy.
+
+### What is actually running
 
 | Layer | Service | Notes |
 |---|---|---|
-| Public API | **Amazon API Gateway** (HTTP API) | fronts the engine; Function URLs are restricted on new AWS accounts, so the standard API Gateway + Lambda pattern is used |
-| Compute | **AWS Lambda** (Python 3.12, 1 GB, 120 s) | FastAPI via Mangum; scales concurrently per request |
-| State | **Amazon DynamoDB** (3 on-demand tables) | audit log (append-only), tickets, calibration |
-| Identity | **AWS IAM** | dedicated execution role: DynamoDB + Bedrock + CloudWatch logs only |
-| Logs | **Amazon CloudWatch** | structured JSON events from every evaluation and decision |
-| LLM | **Groq** (self-healing model selection + 429 backoff) | `AUTONOMYGATE_AGENT=bedrock` switches to Amazon Bedrock (Nova/Claude) — one env var; this account's Bedrock invocation is pending AWS's new-account verification (support case filed) |
+| Public API | **Amazon API Gateway** (HTTP API) | Lambda Function URLs are restricted on new AWS accounts, so the standard API Gateway + Lambda pattern is used |
+| Compute | **AWS Lambda** (Python 3.12, 1 GB, 120 s) | FastAPI via Mangum; concurrent instances per request |
+| State | **Amazon DynamoDB** (3 on-demand tables) | audit (append-only, conditional writes), tickets, calibration |
+| Identity | **AWS IAM** | inline policy: the three `autonomygate-*` tables + `bedrock:InvokeModel` only |
+| Logs | **Amazon CloudWatch** | structured JSON for every evaluation and decision |
+| LLM | **Groq** → Bedrock-ready | one env var switches providers |
 
-Deployment is scripted end to end: `python scripts/deploy_lambda.py` builds the
-linux wheel package, creates/updates the role, function, and public API. No
-Docker required.
+---
 
-## Design decisions (and their tradeoffs)
+## Security & adversarial testing
 
-- **Deterministic scorer, not LLM-as-judge.** Explainable, testable, free,
-  fast; the LLM contributes exactly one bounded input. Using an LLM to govern
+The system was audited by five independent reviewers — two black-box (live API,
+no source access) and three white-box (engine logic, storage/concurrency,
+AppSec). **Every defect below was proven by execution before being fixed**, and
+each now has a regression test in `tests/test_adversarial.py`.
+
+### Governance bypasses found and closed
+
+| Bypass | What it achieved | Fix |
+|---|---|---|
+| **Multi-recipient email** | `attacker@evil.com, victim@ourcorp.com` passed the "is internal" test. Chained with calibration earned from routine internal mail, the external email was sent **fully autonomously** | every recipient validated independently; unparseable values fail closed |
+| **Understated blast radius** | `affected_count: 1` while passing 5 000 ids dodged the bulk-delete override *and* showed the reviewer "1 record" | scope derived from the payload; governs on `max(declared, observed)` |
+| **`modify` escalation** | a 3-record delete could be approved with edited params containing 5 000 ids — overrides never re-checked | edited params are re-governed; refused if they escalate beyond the ticket's tier |
+| **Self-approval** | the proposing agent approved its own REVIEW ticket | reviewer token + separation of duties (403) |
+| **Tool-name evasion** | `DB_DELETE`, `" db_delete"`, unicode variants missed the overrides | names normalized (NFKC, case, whitespace) before matching |
+| **Confidence lever** | a self-reported `1.0` flipped CONFIRM → AUTONOMOUS | confidence contribution floored |
+| **Calibration demotion** | earned trust downgraded 100-record deletes from REVIEW to one-click CONFIRM | calibration made asymmetric and clamped at the boundary |
+| **Attribute dispatch** | a proposed "tool" named `__init__` was routed AUTONOMOUS and, on execution, silently reset the CRM | allowlist enforced before dispatch |
+| **Policy typo** | a malformed override rule silently never fired (fail-**open**) | policy validated at startup; the service refuses to boot on an invalid file |
+
+### Fail-open crashes
+
+Six input classes produced a 500 on `/evaluate` — and a 500 there meant the
+action was **never scored, never routed, never audited**, the worst failure mode
+for a governance gate. Empty and oversized key fields, non-finite floats
+(including inside the 422 renderer itself), deep nesting, and out-of-range
+integers now return explicit 422s.
+
+### Production-only defects (green tests, broken production)
+
+Tests run on SQLite; production runs on DynamoDB. A parity audit found defects
+no passing test could have caught:
+
+- Outcome reporting resolved actions by scanning a 1 000-record window — it
+  would have **404'd permanently** once the audit log grew (it was at 221).
+  Now a keyed lookup.
+- Whole numbers returned as floats, so record id `1000` came back as `1000.0`:
+  the engine could approve action A and hand back action A′. Now preserved.
+- `agent_id` was silently ignored when combined with `session_id` — an auditor
+  filtering to one agent saw everyone's actions, presented as filtered.
+- Queue and audit reads never paginated past DynamoDB's 1 MB page limit; at
+  ~160 pending tickets, **pending REVIEW items would silently disappear** from
+  the reviewer's queue. Now paginated, with server-side filtering.
+- Eventually-consistent reads on the decision path; audit writes that could
+  overwrite history. Now consistent reads, conditional write-once outcomes, and
+  append-only audit puts.
+
+### Controls verified as correct
+
+Double-decision protection under real concurrency (16/16 exactly one 200 + one
+409, one execution each); conditional-update atomicity on DynamoDB; no
+dashboard XSS (escaping traced through every sink, payload round-trip tested);
+no SQL injection (the one dynamic column name is a closed three-layer mapping);
+no path traversal or SSRF; **no committed secrets** (full `git log -p` scan);
+ReDoS mitigated (worst case 0.03 s per 20 KB); 405s with correct `Allow`
+headers on 33 method/path combinations; PII redaction verified live.
+
+---
+
+## Design decisions and tradeoffs
+
+- **Deterministic scorer, not LLM-as-judge.** Explainable, testable, free, and
+  fast; the model contributes exactly one bounded input. Using an LLM to govern
   an LLM would be circular governance.
-- **Approval executes server-side.** The held action's parameters are frozen
-  on the ticket at evaluation time — what the human approves is exactly what
-  runs; the agent cannot swap parameters after approval (TOCTOU protection).
-- **PII is redacted before persistence**, not at display time — raw PII never
-  reaches storage.
-- **Known limitations** (deliberate scope): no authn on the review endpoints
-  (production would add Cognito/OIDC), calibration is per-action-type rather
-  than per-parameter-pattern, and the CRM is an in-memory mock.
-```
+- **Approval executes server-side with frozen parameters.** For `approve`, what
+  the human sees is exactly what runs — the agent cannot swap parameters after
+  approval (TOCTOU protection). For `modify`, the reviewer's edit is a *new
+  proposal* and is re-governed before it can execute.
+- **Fail closed, everywhere.** A missing parameter, an unparseable value, an
+  unknown tool, an invalid policy file, or an unrecognized payload shape all
+  route toward *more* human oversight, never less.
+- **Audit redaction is honest about its boundary.** Audit records are redacted
+  before persistence — including dict keys and numeric values (a 16-digit card
+  sent as a JSON number was previously stored in the clear). Ticket `params` are
+  stored **raw and deliberately**: approval executes them, and redacted
+  parameters would execute the wrong action. Ticket previews are redacted and
+  length-capped. The tickets table is therefore the sensitive store and is
+  behind reviewer auth.
+
+## Known limitations (deliberate, and what production would add)
+
+- **Reviewer auth is a shared bearer token**, not per-reviewer identity. It
+  closes self-approval but cannot attribute a decision to a named human;
+  production would use an API Gateway JWT authorizer + Cognito and derive
+  `decided_by` from the verified token rather than the request body.
+- **No rate limiting.** An API Gateway usage plan is the natural next step
+  (cost and write amplification are otherwise unbounded).
+- **The CRM is an in-memory mock** (as the problem statement specifies), so it
+  resets per Lambda instance — governance state is in DynamoDB and is not
+  affected.
+- **Calibration is per action type**, not per parameter pattern, and is not
+  scoped per tenant.
+- **Bedrock invocation is pending** this new AWS account's verification hold;
+  the Bedrock planner is implemented and one env var away.
