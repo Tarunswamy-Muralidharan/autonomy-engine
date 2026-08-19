@@ -7,3 +7,4 @@ venv/
 .pytest_cache/
 .coverage
 dist/
+build_lambda/
