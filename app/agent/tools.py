@@ -135,6 +135,12 @@ def reset_crm() -> None:
     _crm = None
 
 
+def is_local_tool(tool: str) -> bool:
+    """True if this engine hosts the tool's implementation. External agents
+    govern their OWN tools through /evaluate; the engine never executes those."""
+    return any(spec["name"] == tool for spec in TOOL_SPECS)
+
+
 def execute_tool(tool: str, params: dict) -> tuple[object, int]:
     crm = get_crm()
     fn = getattr(crm, tool, None)

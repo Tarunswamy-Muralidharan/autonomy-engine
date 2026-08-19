@@ -60,6 +60,10 @@ class AgentTask(BaseModel):
 
 @app.post("/evaluate", response_model=EvaluateResponse)
 def evaluate(req: EvaluateRequest) -> EvaluateResponse:
+    import json as _json
+    if len(_json.dumps(req.params, default=str)) > 200_000:
+        raise HTTPException(413, "params too large (200KB limit); pass a reference "
+                                 "(e.g. an object key) instead of inline payloads")
     return run_evaluation(policy, req)
 
 
@@ -105,7 +109,18 @@ def decide_ticket(ticket_id: str, body: Decision) -> dict:
 
     execution_result = None
     if decision in ("approved", "modified"):
-        # Human said yes -> the action executes. On "modify", the human's
+        if not agent_tools.is_local_tool(updated["tool"]):
+            # External integration contract: the engine GOVERNS the action but
+            # the calling stack owns the tool. Approval is recorded; the caller
+            # polls the ticket, executes, and reports via /audit/{id}/outcome.
+            repo.update_audit_outcome(updated["action_id"],
+                                      "approved_pending_external_execution",
+                                      body.decided_by)
+            updated["execution_result"] = None
+            updated["note"] = (updated.get("note") or "") + \
+                " [external tool: execute in your stack, then report the outcome]"
+            return updated
+        # Local tool -> the action executes here. On "modify", the human's
         # edited parameters REPLACE the agent's (human-authored = authorized).
         exec_params = (body.edited_params if decision == "modified"
                        else updated.get("params", {}))
@@ -137,6 +152,7 @@ def queue(status: str = "pending", kind: str | None = None) -> list[dict]:
 @app.get("/audit")
 def audit(session_id: str | None = None, agent_id: str | None = None,
           limit: int = 100) -> list[dict]:
+    limit = max(1, min(limit, 1000))
     return get_repo().query_audit(session_id=session_id, agent_id=agent_id, limit=limit)
 
 

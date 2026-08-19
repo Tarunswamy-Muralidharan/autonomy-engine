@@ -214,6 +214,51 @@ def test_concurrent_evaluations(client):
     assert len(audit) == 20
 
 
+# --- External integration: engine governs tools it does not host ---
+
+def test_external_tool_governed_never_executed_locally(client):
+    res = _evaluate(client, tool="send_slack_message", session_id="ext",
+                    params={"channel": "#ops", "text": "hello"})
+    assert res["route"] in ("CONFIRM", "REVIEW")   # unknown tools score conservatively
+
+    d = client.post(f"/tickets/{res['ticket_id']}/decision",
+                    json={"decision": "approve", "decided_by": "reviewer"})
+    assert d.status_code == 200                     # was a 500 before the fix
+    assert d.json()["execution_result"] is None     # engine did NOT try to execute
+    rec = client.get("/audit", params={"session_id": "ext"}).json()[0]
+    assert rec["final_outcome"] == "approved_pending_external_execution"
+
+    # the external stack executes on its side, then reports back
+    r = client.post(f"/audit/{res['action_id']}/outcome",
+                    json={"outcome": "executed", "decided_by": "external-stack"})
+    assert r.status_code == 200
+
+
+# --- Robustness: oversized payloads and redaction performance ---
+
+def test_giant_payload_rejected_fast(client):
+    import time
+    start = time.time()
+    r = client.post("/evaluate", json={
+        "agent_id": "x", "session_id": "big", "tool": "crm_read",
+        "params": {"blob": "A" * 600_000}, "affected_count": 1,
+        "model_confidence": 0.5})
+    assert r.status_code == 413
+    assert time.time() - start < 5                  # hung for minutes before the fix
+
+def test_redaction_linear_on_large_digitless_text():
+    import time
+    from app.audit.redact import redact_text
+    start = time.time()
+    out = redact_text("A" * 150_000)
+    assert time.time() - start < 2
+    assert "TRUNCATED" in out
+
+def test_audit_limit_clamped(client):
+    assert client.get("/audit", params={"limit": -1}).status_code == 200
+    assert client.get("/audit", params={"limit": 999999}).status_code == 200
+
+
 # --- Health ---
 
 def test_health(client):
