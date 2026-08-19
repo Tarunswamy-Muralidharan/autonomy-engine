@@ -40,9 +40,10 @@ policy = Policy()
 
 
 class Decision(BaseModel):
-    decision: str = Field(pattern="^(approve|reject)$")
+    decision: str = Field(pattern="^(approve|reject|modify)$")
     decided_by: str = "user"
     note: str = ""
+    edited_params: dict | None = None   # required when decision == "modify"
 
 
 class OutcomeUpdate(BaseModel):
@@ -89,22 +90,29 @@ def decide_ticket(ticket_id: str, body: Decision) -> dict:
     ticket = repo.get_ticket(ticket_id)
     if not ticket:
         raise HTTPException(404, "ticket not found")
-    decision = "approved" if body.decision == "approve" else "rejected"
+    decision = {"approve": "approved", "reject": "rejected",
+                "modify": "modified"}[body.decision]
+    if decision == "modified" and not body.edited_params:
+        raise HTTPException(422, "decision 'modify' requires edited_params")
     updated = repo.decide_ticket(ticket_id, decision, body.decided_by, body.note)
     if not updated:
         raise HTTPException(409, "ticket already decided")
 
-    # Calibration learns from CONFIRM-tier human decisions (bonus feature).
+    # Calibration learns from CONFIRM-tier human decisions (bonus feature):
+    # clean approvals lower future risk; rejections AND modifications raise it.
     if updated["kind"] == "confirm":
         repo.update_calibration(updated["tool"], decision)
 
     execution_result = None
-    if decision == "approved":
-        # Human said yes -> the held action now actually executes.
+    if decision in ("approved", "modified"):
+        # Human said yes -> the action executes. On "modify", the human's
+        # edited parameters REPLACE the agent's (human-authored = authorized).
+        exec_params = (body.edited_params if decision == "modified"
+                       else updated.get("params", {}))
         try:
-            execution_result, _ = agent_tools.execute_tool(
-                updated["tool"], updated.get("params", {}))
-            repo.update_audit_outcome(updated["action_id"], "executed", body.decided_by)
+            execution_result, _ = agent_tools.execute_tool(updated["tool"], exec_params)
+            outcome = "executed" if decision == "approved" else "executed_modified"
+            repo.update_audit_outcome(updated["action_id"], outcome, body.decided_by)
         except Exception as exc:
             repo.update_audit_outcome(updated["action_id"], "failed", "system")
             log.error('{"event": "approved_execution_failed", "ticket": "%s", '

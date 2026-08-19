@@ -161,6 +161,46 @@ def test_calibration_drifts_down_after_consistent_approvals(client):
     assert res["route"] == "AUTONOMOUS"
 
 
+# --- Bonus: reviewer MODIFY action — edited params execute, agent's don't ---
+
+def test_modify_decision_executes_edited_params(client):
+    res = _evaluate(client, tool="crm_update", session_id="sess-mod",
+                    params={"customer_id": "1001", "field": "plan", "value": "enterprise"})
+    assert res["route"] == "CONFIRM"
+    r = client.post(f"/tickets/{res['ticket_id']}/decision",
+                    json={"decision": "modify", "decided_by": "reviewer",
+                          "note": "downgrade to silver instead",
+                          "edited_params": {"customer_id": "1001", "field": "plan",
+                                            "value": "silver"}})
+    assert r.status_code == 200
+    assert r.json()["execution_result"]["new_value"] == "silver"   # human's edit won
+    rec = client.get("/audit", params={"session_id": "sess-mod"}).json()[0]
+    assert rec["final_outcome"] == "executed_modified"
+
+    # modify without edited_params is rejected
+    res2 = _evaluate(client, tool="crm_update", session_id="sess-mod",
+                     params={"customer_id": "1002", "field": "plan", "value": "gold"})
+    r2 = client.post(f"/tickets/{res2['ticket_id']}/decision",
+                     json={"decision": "modify"})
+    assert r2.status_code == 422
+
+
+# --- Bonus: consistent modifications RAISE risk (adjustment +15) ---
+
+def test_calibration_drifts_up_after_consistent_modifications(client):
+    for i in range(10):
+        res = _evaluate(client, tool="crm_update",
+                        params={"customer_id": str(1001 + i), "field": "plan",
+                                "value": "enterprise"})
+        client.post(f"/tickets/{res['ticket_id']}/decision",
+                    json={"decision": "modify",
+                          "edited_params": {"customer_id": str(1001 + i),
+                                            "field": "plan", "value": "silver"}})
+    stats = client.get("/calibration/crm_update").json()
+    assert stats["modifications"] >= 10
+    assert stats["current_adjustment"] == 15.0
+
+
 # --- Concurrency: 20 parallel evaluations all succeed and all audited ---
 
 def test_concurrent_evaluations(client):

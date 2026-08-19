@@ -25,11 +25,11 @@ def compute_adjustment(stats: dict) -> float:
     confirms = stats.get("confirms", 0)
     if confirms < MIN_SAMPLES:
         return 0.0
-    approvals = stats.get("approvals", 0)
-    rejections = stats.get("rejections", 0)
+    approvals = stats.get("approvals", 0)          # approved WITHOUT modification
+    negative = stats.get("rejections", 0) + stats.get("modifications", 0)
     adjustment = 0.0
     if approvals / confirms >= 0.9:
-        adjustment = -10.0
-    elif rejections / confirms >= 0.4:
-        adjustment = 15.0
+        adjustment = -10.0                         # trusted -> drift toward autonomous
+    elif negative / confirms >= 0.4:
+        adjustment = 15.0                          # distrusted -> drift toward review
     return max(-MAX_ADJUSTMENT, min(MAX_ADJUSTMENT, adjustment))

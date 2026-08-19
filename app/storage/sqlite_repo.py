@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS calibration (
     confirms      INTEGER NOT NULL DEFAULT 0,
     approvals     INTEGER NOT NULL DEFAULT 0,
     rejections    INTEGER NOT NULL DEFAULT 0,
+    modifications INTEGER NOT NULL DEFAULT 0,
     adjustment    REAL NOT NULL DEFAULT 0
 );
 """
@@ -166,7 +167,8 @@ class SqliteRepo(Repo):
                 "INSERT OR IGNORE INTO calibration (action_type) VALUES (?)",
                 (action_type,),
             )
-            col = "approvals" if decision == "approved" else "rejections"
+            col = {"approved": "approvals", "rejected": "rejections",
+                   "modified": "modifications"}.get(decision, "rejections")
             self._conn.execute(
                 f"UPDATE calibration SET confirms = confirms + 1, {col} = {col} + 1 "
                 "WHERE action_type = ?",

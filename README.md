@@ -47,10 +47,15 @@ records, email to external domain, full data export) route deterministically
 and *bypass scoring entirely*. The scorer advises; the policy rules. A
 probabilistic score can never overrule an explicit governance rule.
 
-**Adaptive calibration (bonus).** If humans approve a CONFIRM-tier action type
-≥ 90% of the time (min 10 samples), its risk drifts down −10 toward autonomous;
-≥ 40% rejections drifts it up +15. Capped at ±20 and always subordinate to
-hard overrides — calibration tunes the gray zone, never the red lines.
+**Adaptive calibration (bonus — full spec).** Reviewers have three actions:
+**approve** (execute as proposed), **reject** (block), and **modify** (execute
+with human-edited parameters — the edit replaces the agent's proposal). If
+humans cleanly approve a CONFIRM-tier action type ≥ 90% of the time (min 10
+samples), its risk drifts down −10 toward autonomous; if they reject **or
+modify** it ≥ 40% of the time, it drifts up +15 — a modification means the
+agent's proposals for that action type aren't trustworthy as-is. Capped at
+±20 and always subordinate to hard overrides — calibration tunes the gray
+zone, never the red lines.
 
 ## Governed sample workload
 

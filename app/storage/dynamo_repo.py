@@ -132,7 +132,8 @@ class DynamoRepo(Repo):
         return _clean(item)
 
     def update_calibration(self, action_type: str, decision: str) -> dict:
-        col = "approvals" if decision == "approved" else "rejections"
+        col = {"approved": "approvals", "rejected": "rejections",
+               "modified": "modifications"}.get(decision, "rejections")
         self.calib.update_item(
             Key={"action_type": action_type},
             UpdateExpression=f"ADD confirms :one, {col} :one",
