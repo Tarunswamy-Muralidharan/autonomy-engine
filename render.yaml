@@ -1,0 +1,21 @@
+# Render.com Blueprint — fallback/parallel deployment path (no AWS dependency).
+# Deploy: Render dashboard -> New -> Blueprint -> select this repo.
+services:
+  - type: web
+    name: autonomygate
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.6
+      - key: AUTONOMYGATE_STORAGE
+        value: sqlite
+      - key: AUTONOMYGATE_AGENT
+        value: groq
+      - key: AUTONOMYGATE_DB
+        value: /tmp/autonomygate.db
+      - key: GROQ_API_KEY
+        sync: false   # set manually in the Render dashboard — never committed

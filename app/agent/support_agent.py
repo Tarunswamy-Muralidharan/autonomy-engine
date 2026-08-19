@@ -1,14 +1,17 @@
 """The governed sample agent.
 
-Two interchangeable planners (env AUTONOMYGATE_AGENT=scripted|bedrock):
+Three interchangeable planners (env AUTONOMYGATE_AGENT=scripted|bedrock|groq):
 
   scripted  - deterministic keyword planner. Zero cloud dependency; used by
               tests and offline dev. Proves the GOVERNANCE path regardless
               of any LLM's mood.
   bedrock   - Amazon Bedrock (Claude) tool-calling loop via the Converse
-              API. The production demo mode. Each tool schema carries a
-              required `confidence` field the model must fill in — that
-              self-assessment feeds the risk scorer's confidence dimension.
+              API. Each tool schema carries a required `confidence` field
+              the model must fill in — that self-assessment feeds the risk
+              scorer's confidence dimension.
+  groq      - Groq-hosted Llama via the OpenAI-compatible chat-completions
+              API (free tier). Same confidence-field contract. Demonstrates
+              that the governance layer is provider-agnostic.
 
 Both planners emit the same thing: a sequence of proposed tool calls.
 EVERY proposed call goes through AutonomyGate BEFORE execution:
@@ -133,6 +136,71 @@ class BedrockPlanner:
         return transcript
 
 
+class GroqPlanner:
+    """Llama tool-calling loop on Groq's OpenAI-compatible API (free tier).
+
+    Same contract as BedrockPlanner: every tool schema carries a required
+    `confidence` field; on_tool_call(tool, params, confidence) returns the
+    tool-result text (which may be a governance-pending note).
+    """
+
+    def __init__(self):
+        import httpx
+        self.api_key = os.environ["GROQ_API_KEY"]
+        self.model = os.environ.get("AUTONOMYGATE_GROQ_MODEL",
+                                    "llama-3.3-70b-versatile")
+        self.http = httpx.Client(
+            base_url="https://api.groq.com/openai/v1",
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            timeout=60.0,
+        )
+
+    def _tools(self) -> list[dict]:
+        specs = []
+        for spec in T.TOOL_SPECS:
+            schema = json.loads(json.dumps(spec["schema"]))
+            schema["properties"]["confidence"] = {
+                "type": "number",
+                "description": "Your honest confidence (0-1) that this exact "
+                               "call with these parameters is correct.",
+            }
+            schema["required"] = list(schema.get("required", [])) + ["confidence"]
+            specs.append({"type": "function",
+                          "function": {"name": spec["name"],
+                                       "description": spec["description"],
+                                       "parameters": schema}})
+        return specs
+
+    def run(self, task: str, on_tool_call) -> list[str]:
+        messages = [{"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": task}]
+        transcript: list[str] = []
+        for _ in range(8):  # hard iteration cap
+            resp = self.http.post("/chat/completions", json={
+                "model": self.model,
+                "messages": messages,
+                "tools": self._tools(),
+                "temperature": 0,
+                "max_tokens": 1024,
+            })
+            resp.raise_for_status()
+            msg = resp.json()["choices"][0]["message"]
+            messages.append(msg)
+            if msg.get("content"):
+                transcript.append(msg["content"].strip())
+            tool_calls = msg.get("tool_calls") or []
+            if not tool_calls:
+                break
+            for tc in tool_calls:
+                params = json.loads(tc["function"]["arguments"] or "{}")
+                confidence = float(params.pop("confidence", 0.7))
+                outcome_text = on_tool_call(tc["function"]["name"], params, confidence)
+                messages.append({"role": "tool",
+                                 "tool_call_id": tc["id"],
+                                 "content": outcome_text})
+        return transcript
+
+
 # ---------------------------------------------------------------- harness
 
 def run_task(policy: Policy, task: str, session_id: str | None = None) -> dict:
@@ -168,6 +236,8 @@ def run_task(policy: Policy, task: str, session_id: str | None = None) -> dict:
 
     if mode == "bedrock":
         transcript = BedrockPlanner().run(task, governed_call)
+    elif mode == "groq":
+        transcript = GroqPlanner().run(task, governed_call)
     else:
         transcript = []
         for proposal in _scripted_plan(task):
