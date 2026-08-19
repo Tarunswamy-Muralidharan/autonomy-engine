@@ -113,7 +113,7 @@ human decision.
 | Mode | Model | Purpose |
 |---|---|---|
 | `groq` | Llama via Groq (OpenAI-compatible) | **currently live**; self-heals when a model is retired (404 → live catalog) and backs off on 429 |
-| `bedrock` | Amazon Bedrock (Nova / Claude, Converse API) | one env var away; blocked only by this new AWS account's Bedrock verification hold |
+| `bedrock` | Amazon Bedrock (Nova / Claude, Converse API) | implemented, one env var away; not invocable on this account (see *AWS free-plan limits* below) |
 | `scripted` | deterministic keyword planner | offline; lets the test suite prove the governance path with no LLM dependency |
 
 ---
@@ -145,7 +145,7 @@ minimum viable control that closes self-approval today.
 
 ```bash
 pip install -r requirements.txt
-python -m pytest            # 43 tests
+python -m pytest            # 58 tests
 uvicorn app.main:app --port 8080
 # http://localhost:8080  — scripted agent + SQLite, review plane open in dev
 ```
@@ -168,9 +168,52 @@ generates a reviewer token on first deploy.
 | Public API | **Amazon API Gateway** (HTTP API) | Lambda Function URLs are restricted on new AWS accounts, so the standard API Gateway + Lambda pattern is used |
 | Compute | **AWS Lambda** (Python 3.12, 1 GB, 120 s) | FastAPI via Mangum; concurrent instances per request |
 | State | **Amazon DynamoDB** (3 on-demand tables) | audit (append-only, conditional writes), tickets, calibration |
-| Identity | **AWS IAM** | inline policy: the three `autonomygate-*` tables + `bedrock:InvokeModel` only |
+| PII detection | **Amazon Comprehend** | contextual NER over audit text — catches names, addresses and national IDs that regex cannot |
+| Identity | **AWS IAM** | inline policy scoped to the three `autonomygate-*` tables, `bedrock:InvokeModel`, and read-only Comprehend |
 | Logs | **Amazon CloudWatch** | structured JSON for every evaluation and decision |
 | LLM | **Groq** → Bedrock-ready | one env var switches providers |
+
+### Layered PII detection (Amazon Comprehend)
+
+Regex catches PII that has **shape** — an email has an `@`, a card has 13–19
+digits. It is structurally blind to PII that only has **meaning**: a person's
+name, a street address, a passport number in a free-text field. Those are
+exactly what leaks into an agent's tool parameters, and exactly what a
+regulator asks about.
+
+`AUTONOMYGATE_PII=comprehend` adds `comprehend:DetectPiiEntities` as a second
+detector. Both layers produce character spans over the *same* original string;
+the spans are merged (longest-wins on overlap) and applied right-to-left in a
+single pass, so neither layer can corrupt the other's offsets or nest a marker
+inside a marker.
+
+It is designed to fail **safely, not open**:
+
+- regex always runs, so redaction never gets *weaker* than the offline baseline;
+- the call is bounded to 4.5 KB and skipped for trivial strings — we cap our own
+  latency rather than let AWS reject the request;
+- 1 s connect / 2 s read timeout, no retries;
+- a **circuit breaker** opens after 3 consecutive failures, so a Comprehend
+  outage cannot add its timeout to every `/evaluate` call;
+- low-confidence (< 0.85) findings are ignored, and `DATE_TIME` / `URL` /
+  `USERNAME` are deliberately **not** redacted — an audit trail an auditor
+  cannot read is not safer, just useless.
+
+Only identity- and finance-bearing types are destroyed, including the
+India-specific `IN_AADHAAR`, `IN_PAN`, `IN_NREGA` and `IN_VOTER_NUMBER`.
+`tests/test_comprehend_redaction.py` covers the failure paths, not just the
+happy path — the breaker, the fallback, the bounds, and the offset merge.
+
+### AWS free-plan limits (honest note)
+
+This account is on the AWS free plan, which returns
+`ValidationException: Operation not allowed` for **every** Bedrock model —
+including Amazon's own Nova, so it is a plan restriction, not a model-access
+gate. The Bedrock planner is implemented and selected by one env var; it is not
+invocable here. Comprehend is not plan-restricted, which is why the AWS AI
+surface in this project is Comprehend rather than Bedrock. If Comprehend were
+also unavailable, the circuit breaker degrades the system to regex redaction
+with no code change.
 
 ---
 
@@ -267,5 +310,9 @@ headers on 33 method/path combinations; PII redaction verified live.
   affected.
 - **Calibration is per action type**, not per parameter pattern, and is not
   scoped per tenant.
-- **Bedrock invocation is pending** this new AWS account's verification hold;
-  the Bedrock planner is implemented and one env var away.
+- **Bedrock is not invocable on this account** — the AWS free plan rejects every
+  model, Amazon's own included. The planner is implemented and one env var away;
+  Amazon Comprehend carries the AWS AI surface instead.
+- **Comprehend runs synchronously in the request path.** At higher volume the
+  right shape is to redact asynchronously off a DynamoDB stream, or batch with
+  `BatchDetectPiiEntities`, so audit writes never wait on an NER call.

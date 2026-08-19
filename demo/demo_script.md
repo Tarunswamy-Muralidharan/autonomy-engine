@@ -1,4 +1,4 @@
-# AutonomyGate — Demo Video Script (target 4–5 minutes)
+# AutonomyGate — Demo Video Script (target 5–5.5 minutes)
 
 Record with OBS or Windows Game Bar (Win+G). Screen + mic. One 1080p monitor.
 Have open in tabs BEFORE recording: the live dashboard, /docs, the GitHub repo,
@@ -59,24 +59,47 @@ Switch to AWS console tabs: Lambda function page, then DynamoDB tables.
 SAY: "Everything you just saw runs on AWS: API Gateway in front, the engine
 on Lambda — it scales per-request — and every audit record, ticket, and
 calibration stat persists in DynamoDB. Logging goes to CloudWatch, and the
-whole deployment is one script — no Docker. The LLM is provider-agnostic:
-one environment variable switches Groq to Amazon Bedrock — the Bedrock
-planner is in the repo; my new AWS account's model invocation is pending
-verification, with a support case on record."
+whole deployment is one script — no Docker."
 
-## 4:00 — Code + tests + bonus (45s)
+## 3:45 — Amazon Comprehend doing real work (45s)
+
+Scroll the dashboard's audit feed to the record from Task 2, or re-run:
+`Add a note to customer 1003: escalate the refund for Priya Raman at 14 Peters Road, Chennai`
+
+SAY: "There's a second AWS AI service in here, and it's solving a real
+problem. Audit logs are themselves sensitive — agent parameters carry
+customer data — so I redact before persisting. Regex handles PII that has a
+SHAPE: an email has an at-sign, a card has sixteen digits. But regex is
+structurally blind to PII that only has MEANING — a person's name, a street
+address. Look at the stored record: the name and the address are both gone.
+That's Amazon Comprehend doing named-entity recognition on the audit text.
+
+And it's layered, not swapped — regex always runs, so redaction can never get
+weaker than the offline baseline. Comprehend is bounded to a two-second
+timeout with a circuit breaker: three failures and it stops calling out
+entirely and falls back to regex. A PII detector that can take down the
+governance gate is worse than no PII detector at all.
+
+I'd originally built this on Bedrock too — the planner's in the repo, one env
+var away — but this account is on the AWS free plan, which rejects every
+Bedrock model including Amazon's own Nova. So I moved the AWS AI surface to
+Comprehend, where it does something the system genuinely needed."
+
+## 4:30 — Code + tests + bonus (45s)
 
 Switch to GitHub repo. Scroll: policy.yaml, tests folder, README table.
 
 SAY: "The governance is declarative — weights, thresholds, and hard
-overrides live in a policy file, not code. Fifteen automated tests cover
-every success criterion in the problem statement, including concurrency and
-PII redaction of the audit trail. And the bonus: adaptive calibration — if
+overrides live in a policy file, not code. Fifty-eight automated tests cover
+every success criterion in the problem statement, plus a regression suite for
+every bypass I found red-teaming my own system — I ran black-box and
+white-box audits against it and fixed what they proved. And the bonus:
+adaptive calibration — if
 humans keep approving an action type, its risk drifts down toward
 autonomous; consistent rejections push it up. Capped, and always subordinate
 to the hard overrides — the system learns, but the red lines don't move."
 
-## 4:45 — Close (15s)
+## 5:15 — Close (15s)
 
 Back on the dashboard.
 

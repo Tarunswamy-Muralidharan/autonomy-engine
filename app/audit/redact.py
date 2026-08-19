@@ -1,13 +1,24 @@
 """PII redaction for audit records.
 
 Audit logs are themselves sensitive assets: parameters may carry emails,
-phone numbers, or card numbers. We redact BEFORE persisting, so raw PII
-never reaches storage. (Redaction here is regex-based and deliberately
-conservative; swap in an NER model behind the same function if needed.)
+phone numbers, or card numbers, and we redact BEFORE persisting so raw PII
+never reaches the audit table.
+
+Two detection layers feed one redaction pass:
+
+  regex        always on, deterministic, offline, catches shaped PII
+  Comprehend   optional (AUTONOMYGATE_PII=comprehend), catches meaningful
+               PII regex cannot see - names, addresses, national IDs
+
+Both layers produce character spans over the SAME original text; the spans
+are merged and applied right-to-left in one pass. Applying them sequentially
+would corrupt offsets and let one layer redact inside another's marker.
 """
 from __future__ import annotations
 
 import re
+
+from . import comprehend
 
 # Bounded quantifiers: unbounded [\w.+-]+ backtracks quadratically on long
 # non-matching strings (found via adversarial testing - a 600KB digit-free
@@ -22,16 +33,44 @@ _PATTERNS: list[tuple[str, re.Pattern, str]] = [
 MAX_REDACT_LEN = 20_000  # audit stores a bounded excerpt; DynamoDB caps items at 400KB
 
 
-def redact_text(text: str) -> str:
-    if len(text) > MAX_REDACT_LEN:
-        text = text[:MAX_REDACT_LEN] + f"...[TRUNCATED {len(text)} chars]"
+def _regex_spans(text: str) -> list[tuple[int, int, str]]:
+    spans: list[tuple[int, int, str]] = []
     digitless = not any(ch.isdigit() for ch in text)
     for label, pattern, needle in _PATTERNS:
         if needle is not None and needle not in text:
             continue  # cheap pre-check: no '@' means no email to find
         if needle is None and digitless:
             continue  # number patterns can't match digit-free text
-        text = pattern.sub(f"[REDACTED:{label}]", text)
+        spans.extend((m.start(), m.end(), label) for m in pattern.finditer(text))
+    return spans
+
+
+def _merge(spans: list[tuple[int, int, str]]) -> list[tuple[int, int, str]]:
+    """Drop overlaps, preferring the longest span at each position.
+
+    Two detectors legitimately flag the same characters (Comprehend's EMAIL
+    and our EMAIL regex). Redacting the wider match once is correct; redacting
+    both would splice a marker into the middle of another marker.
+    """
+    spans.sort(key=lambda s: (s[0], -(s[1] - s[0])))
+    merged: list[tuple[int, int, str]] = []
+    last_end = -1
+    for begin, end, label in spans:
+        if begin >= last_end:
+            merged.append((begin, end, label))
+            last_end = end
+    return merged
+
+
+def redact_text(text: str) -> str:
+    if len(text) > MAX_REDACT_LEN:
+        text = text[:MAX_REDACT_LEN] + f"...[TRUNCATED {len(text)} chars]"
+    spans = _regex_spans(text)
+    # Comprehend spans are computed over the same (already truncated) string,
+    # so the two offset spaces agree.
+    spans.extend(comprehend.detect_spans(text))
+    for begin, end, label in reversed(_merge(spans)):
+        text = f"{text[:begin]}[REDACTED:{label}]{text[end:]}"
     return text
 
 

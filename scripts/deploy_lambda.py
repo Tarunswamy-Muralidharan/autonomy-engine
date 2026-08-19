@@ -51,6 +51,13 @@ def _inline_policy(account: str) -> dict:
             {"Effect": "Allow",
              "Action": ["bedrock:InvokeModel", "bedrock:Converse"],
              "Resource": "*"},
+            # Read-only PII inspection for the audit redactor. Comprehend has
+            # no resource-level ARNs for these calls, so "*" is the tightest
+            # grant available; both actions are analysis-only.
+            {"Effect": "Allow",
+             "Action": ["comprehend:DetectPiiEntities",
+                        "comprehend:ContainsPiiEntities"],
+             "Resource": "*"},
         ],
     }
 
@@ -130,6 +137,7 @@ def deploy(lam, role_arn: str, package: bytes) -> None:
     env = {"Variables": {
         "AUTONOMYGATE_STORAGE": "dynamo",
         "AUTONOMYGATE_AGENT": "groq",
+        "AUTONOMYGATE_PII": "comprehend",
     }}
     try:
         current = lam.get_function(FunctionName=FUNC_NAME)
