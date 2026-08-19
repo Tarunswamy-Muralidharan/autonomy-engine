@@ -144,6 +144,11 @@ class GroqPlanner:
     tool-result text (which may be a governance-pending note).
     """
 
+    # Preference order used when the configured model is unavailable (Groq
+    # rotates its catalog); first live match wins. Tool-calling capable only.
+    MODEL_PREFERENCES = ["llama-4", "llama-3.3", "gpt-oss-120b", "gpt-oss",
+                         "kimi", "qwen", "llama-3.1"]
+
     def __init__(self):
         import httpx
         self.api_key = os.environ["GROQ_API_KEY"]
@@ -154,6 +159,19 @@ class GroqPlanner:
             headers={"Authorization": f"Bearer {self.api_key}"},
             timeout=60.0,
         )
+
+    def _pick_available_model(self) -> str:
+        """Fetch the live catalog and pick the best tool-capable model."""
+        resp = self.http.get("/models")
+        resp.raise_for_status()
+        available = [m["id"] for m in resp.json().get("data", [])]
+        for pref in self.MODEL_PREFERENCES:
+            for model_id in available:
+                if pref in model_id and "guard" not in model_id.lower():
+                    log.info('{"event": "groq_model_fallback", "from": "%s", '
+                             '"to": "%s"}', self.model, model_id)
+                    return model_id
+        raise RuntimeError(f"no suitable Groq model found in: {available}")
 
     def _tools(self) -> list[dict]:
         specs = []
@@ -183,6 +201,17 @@ class GroqPlanner:
                 "temperature": 0,
                 "max_tokens": 1024,
             })
+            if resp.status_code == 404:
+                # Configured model retired from Groq's catalog - self-heal.
+                self.model = self._pick_available_model()
+                continue
+            if resp.status_code == 429:
+                # Free-tier rate limit: honor Retry-After (capped), then retry.
+                import time as _time
+                delay = min(float(resp.headers.get("retry-after", 5)), 25.0)
+                log.info('{"event": "groq_rate_limited", "retry_after_s": %s}', delay)
+                _time.sleep(delay)
+                continue
             resp.raise_for_status()
             msg = resp.json()["choices"][0]["message"]
             messages.append(msg)

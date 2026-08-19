@@ -1,5 +1,8 @@
 # AutonomyGate — Graduated Autonomy Engine
 
+**🔴 LIVE DEPLOYMENT (AWS):** https://qg37onlhnh.execute-api.us-east-1.amazonaws.com
+(API Gateway → Lambda → DynamoDB, us-east-1 · dashboard at `/` · OpenAPI at `/docs` · health at `/health`)
+
 **Aivar Agentic AI Task — PS-9.1.** A production-deployed governance engine that
 risk-scores every action an AI agent attempts and routes it to the right
 autonomy level — **autonomous execution**, **user confirmation**, or **human
@@ -101,6 +104,21 @@ docker push <acct>.dkr.ecr.<region>.amazonaws.com/autonomygate:latest
 #    Env: AUTONOMYGATE_STORAGE=dynamo  AUTONOMYGATE_AGENT=bedrock
 #         AWS_REGION=<region>  AUTONOMYGATE_BEDROCK_MODEL=<claude model id>
 ```
+
+## Production deployment (what is actually running)
+
+| Layer | Service | Notes |
+|---|---|---|
+| Public API | **Amazon API Gateway** (HTTP API) | fronts the engine; Function URLs are restricted on new AWS accounts, so the standard API Gateway + Lambda pattern is used |
+| Compute | **AWS Lambda** (Python 3.12, 1 GB, 120 s) | FastAPI via Mangum; scales concurrently per request |
+| State | **Amazon DynamoDB** (3 on-demand tables) | audit log (append-only), tickets, calibration |
+| Identity | **AWS IAM** | dedicated execution role: DynamoDB + Bedrock + CloudWatch logs only |
+| Logs | **Amazon CloudWatch** | structured JSON events from every evaluation and decision |
+| LLM | **Groq** (self-healing model selection + 429 backoff) | `AUTONOMYGATE_AGENT=bedrock` switches to Amazon Bedrock (Nova/Claude) — one env var; this account's Bedrock invocation is pending AWS's new-account verification (support case filed) |
+
+Deployment is scripted end to end: `python scripts/deploy_lambda.py` builds the
+linux wheel package, creates/updates the role, function, and public API. No
+Docker required.
 
 ## Design decisions (and their tradeoffs)
 
