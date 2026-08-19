@@ -22,6 +22,11 @@ class Repo(ABC):
     def update_audit_outcome(self, action_id: str, outcome: str, decided_by: str) -> bool: ...
 
     @abstractmethod
+    def get_audit(self, action_id: str) -> dict | None:
+        """Keyed lookup of ONE audit record. Never a scan - the outcome
+        endpoint must resolve any action regardless of audit-log size."""
+
+    @abstractmethod
     def query_audit(self, session_id: str | None = None, agent_id: str | None = None,
                     limit: int = 100) -> list[dict]: ...
 

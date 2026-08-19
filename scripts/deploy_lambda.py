@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import secrets
 import shutil
 import subprocess
 import sys
@@ -25,14 +27,32 @@ REGION = "us-east-1"
 FUNC_NAME = "autonomygate"
 ROLE_NAME = "autonomygate-lambda-role"
 RUNTIME = "python3.12"
+PREFIX = os.environ.get("AUTONOMYGATE_TABLE_PREFIX", "autonomygate")
 ROOT = Path(__file__).parent.parent
 BUILD = ROOT / "build_lambda"
 
 MANAGED_POLICIES = [
     "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
-    "arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess",
-    "arn:aws:iam::aws:policy/AmazonBedrockFullAccess",
 ]
+
+# Least privilege: only the three AutonomyGate tables (+ their indexes) and
+# model invocation. The AWS-managed *FullAccess policies would have granted
+# dynamodb:* on every table in the account, including DeleteTable.
+def _inline_policy(account: str) -> dict:
+    table_arns = [f"arn:aws:dynamodb:{REGION}:{account}:table/{PREFIX}-{t}"
+                  for t in ("audit", "tickets", "calib")]
+    return {
+        "Version": "2012-10-17",
+        "Statement": [
+            {"Effect": "Allow",
+             "Action": ["dynamodb:GetItem", "dynamodb:PutItem",
+                        "dynamodb:UpdateItem", "dynamodb:Query", "dynamodb:Scan"],
+             "Resource": table_arns + [a + "/index/*" for a in table_arns]},
+            {"Effect": "Allow",
+             "Action": ["bedrock:InvokeModel", "bedrock:Converse"],
+             "Resource": "*"},
+        ],
+    }
 
 TRUST = {
     "Version": "2012-10-17",
@@ -91,6 +111,18 @@ def ensure_role(iam) -> str:
         if policy not in attached:
             iam.attach_role_policy(RoleName=ROLE_NAME, PolicyArn=policy)
             print(f"attached {policy.split('/')[-1]}")
+
+    # Drop over-broad managed policies from earlier deployments.
+    for legacy in ("arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess",
+                   "arn:aws:iam::aws:policy/AmazonBedrockFullAccess"):
+        if legacy in attached:
+            iam.detach_role_policy(RoleName=ROLE_NAME, PolicyArn=legacy)
+            print(f"detached over-broad {legacy.split('/')[-1]}")
+
+    account = arn.split(":")[4]
+    iam.put_role_policy(RoleName=ROLE_NAME, PolicyName="AutonomyGateLeastPrivilege",
+                        PolicyDocument=json.dumps(_inline_policy(account)))
+    print("applied least-privilege inline policy")
     return arn
 
 
@@ -100,13 +132,24 @@ def deploy(lam, role_arn: str, package: bytes) -> None:
         "AUTONOMYGATE_AGENT": "groq",
     }}
     try:
-        lam.get_function(FunctionName=FUNC_NAME)
+        current = lam.get_function(FunctionName=FUNC_NAME)
         print("updating function code ...")
         lam.update_function_code(FunctionName=FUNC_NAME, ZipFile=package)
-        waiter = lam.get_waiter("function_updated_v2")
-        waiter.wait(FunctionName=FUNC_NAME)
+        lam.get_waiter("function_updated_v2").wait(FunctionName=FUNC_NAME)
+
+        # Reconcile configuration on every deploy, preserving existing
+        # secrets. update_function_code alone never corrects config drift,
+        # and a reviewer token that is never set leaves the review plane open.
+        existing = current["Configuration"].get("Environment", {}).get("Variables", {})
+        merged = {**env["Variables"], **existing}
+        merged.setdefault("AUTONOMYGATE_REVIEWER_TOKEN", secrets.token_urlsafe(32))
+        lam.update_function_configuration(
+            FunctionName=FUNC_NAME, Timeout=120, MemorySize=1024,
+            Environment={"Variables": merged})
+        lam.get_waiter("function_updated_v2").wait(FunctionName=FUNC_NAME)
     except lam.exceptions.ResourceNotFoundException:
         print("creating function ...")
+        env["Variables"]["AUTONOMYGATE_REVIEWER_TOKEN"] = secrets.token_urlsafe(32)
         for attempt in range(6):
             try:
                 lam.create_function(

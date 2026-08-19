@@ -75,7 +75,7 @@ class MockCRM:
         self.sent_emails.append({"to": to, "body": body, "ts": time.time()})
         return {"sent_to": to}, 1
 
-    def export_report(self, scope: str = "all") -> tuple[dict, int]:
+    def export_report(self, scope: str) -> tuple[dict, int]:   # no implicit "all"
         n = len(self.customers) if scope in ("all", "*") else 1
         self.exports.append({"scope": scope, "rows": n, "ts": time.time()})
         return {"exported_rows": n}, n
@@ -142,21 +142,49 @@ def is_local_tool(tool: str) -> bool:
 
 
 def execute_tool(tool: str, params: dict) -> tuple[object, int]:
-    crm = get_crm()
-    fn = getattr(crm, tool, None)
-    if fn is None:
+    # Allowlist FIRST: `tool` is model-supplied. A bare getattr let a proposed
+    # "tool" named __init__ (or any other attribute) be invoked - found in
+    # adversarial testing. Only declared tools are ever reachable.
+    if not is_local_tool(tool):
         raise ValueError(f"unknown tool: {tool}")
-    return fn(**params)
+    if not isinstance(params, dict):
+        raise ValueError(f"tool params must be an object, got {type(params).__name__}")
+    fn = getattr(get_crm(), tool)
+    try:
+        return fn(**params)
+    except TypeError as exc:      # wrong/extra kwargs from the model
+        raise ValueError(f"invalid parameters for {tool}: {exc}") from exc
 
 
 def estimate_affected_count(tool: str, params: dict) -> int:
-    """Blast radius BEFORE execution — what the risk scorer needs."""
+    """Blast radius BEFORE execution — what the risk scorer needs.
+
+    Fails toward the MAXIMUM radius on anything unexpected: an
+    under-estimate would under-govern the action and mislead the human
+    reviewer about what they are approving.
+    """
     crm = get_crm()
+    everything = len(crm.customers)
+    if not isinstance(params, dict):
+        return everything
+
     if tool == "db_delete":
-        return len(params.get("record_ids", []))
+        ids = params.get("record_ids")
+        if isinstance(ids, (list, tuple, set)):
+            return len(ids)
+        return everything                       # unknown shape -> worst case
+
     if tool == "export_report":
-        return len(crm.customers) if params.get("scope") in ("all", "*") else 1
+        scope = params.get("scope")
+        if not isinstance(scope, str):
+            return everything                   # MockCRM defaults to exporting all
+        return 1 if scope.strip().lower() not in ("all", "*") else everything
+
     if tool == "crm_search":
-        hits, n = crm.crm_search(**params)
-        return n
+        try:
+            _, n = crm.crm_search(**{k: v for k, v in params.items()
+                                     if k in ("query", "inactive_only")})
+            return n
+        except Exception:
+            return everything
     return 1

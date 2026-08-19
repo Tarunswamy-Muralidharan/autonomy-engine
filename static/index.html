@@ -51,6 +51,13 @@
 
 <div class="grid">
   <div class="panel full">
+    <h2>Reviewer sign-in <span id="auth-state" class="risk"></span></h2>
+    <input id="token" type="password" placeholder="reviewer token (required to view the queue and decide)">
+    <button class="run" onclick="saveToken()">Sign in</button>
+    <span class="risk">The proposal API is open to agents; the review plane is not.</span>
+  </div>
+
+  <div class="panel full">
     <h2>Run the governed agent</h2>
     <input id="task" type="text"
            placeholder='e.g. "What plan is customer 1005 on?" / "Update customer 1003 plan to gold" / "Clean up all inactive customers"'>
@@ -70,8 +77,19 @@
 </div>
 
 <script>
-async function api(path, opts) {
+function token() { return localStorage.getItem("ag_token") || ""; }
+
+function saveToken() {
+  localStorage.setItem("ag_token", document.getElementById("token").value.trim());
+  document.getElementById("token").value = "";
+  refresh();
+}
+
+async function api(path, opts = {}) {
+  opts.headers = Object.assign({}, opts.headers,
+    token() ? {"Authorization": "Bearer " + token()} : {});
   const r = await fetch(path, opts);
+  if (r.status === 401) throw new Error("401: sign in with a reviewer token");
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
@@ -109,7 +127,17 @@ function esc(s) { const d = document.createElement("div");
   d.textContent = String(s); return d.innerHTML; }
 
 async function refresh() {
-  const q = await api("/queue?status=pending");
+  const authEl = document.getElementById("auth-state");
+  authEl.textContent = token() ? "· signed in" : "· not signed in";
+  let q;
+  try {
+    q = await api("/queue?status=pending");
+  } catch (e) {
+    document.getElementById("queue").innerHTML =
+      '<div class="empty">Reviewer token required to view the approval queue.</div>';
+    document.getElementById("audit").innerHTML = "";
+    return;
+  }
   document.getElementById("queue").innerHTML = q.length === 0
     ? '<div class="empty">Nothing pending — the agent is fully autonomous right now.</div>'
     : "<table><tr><th>Tier</th><th>Action</th><th>Risk</th><th></th></tr>" +

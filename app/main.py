@@ -6,10 +6,15 @@ sample agent (Bedrock Claude or scripted), and a minimal dashboard.
 """
 from __future__ import annotations
 
+import json
 import logging
+import math
+import os
+import secrets
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
@@ -17,7 +22,9 @@ from .agent import tools as agent_tools
 from .agent.support_agent import run_task
 from .engine.calibration import compute_adjustment
 from .engine.scorer import Policy
-from .engine.service import EvaluateRequest, EvaluateResponse, run_evaluation
+from .engine.router import Route, evaluate_action
+from .engine.service import (EvaluateRequest, EvaluateResponse,
+                             observed_blast_radius, run_evaluation)
 from .storage.repo import get_repo
 
 logging.basicConfig(
@@ -37,6 +44,27 @@ app = FastAPI(
 )
 
 policy = Policy()
+
+REVIEWER_TOKEN = os.environ.get("AUTONOMYGATE_REVIEWER_TOKEN", "")
+
+
+def require_reviewer(authorization: str = Header(default="")) -> str:
+    """Auth for the REVIEW PLANE (queue, decisions, outcome reporting).
+
+    The proposal plane (/evaluate) is deliberately open - it is the
+    integration surface any agent calls. The review plane is not: adversarial
+    testing showed that without this, a caller could propose a high-risk
+    action and then approve its own ticket, which makes REVIEW/CONFIRM
+    decorative. In production this becomes an API Gateway JWT authorizer +
+    Cognito reviewer identities; the bearer token is the minimum viable
+    control that closes the self-approval hole today.
+    """
+    if not REVIEWER_TOKEN:
+        return "anonymous-reviewer"  # unset (local dev): open, as before
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not secrets.compare_digest(token, REVIEWER_TOKEN):
+        raise HTTPException(401, "reviewer credentials required")
+    return "authenticated-reviewer"
 
 
 class Decision(BaseModel):
@@ -89,15 +117,47 @@ def get_ticket(ticket_id: str) -> dict:
 
 
 @app.post("/tickets/{ticket_id}/decision")
-def decide_ticket(ticket_id: str, body: Decision) -> dict:
+def decide_ticket(ticket_id: str, body: Decision,
+                  reviewer: str = Depends(require_reviewer)) -> dict:
     repo = get_repo()
     ticket = repo.get_ticket(ticket_id)
     if not ticket:
         raise HTTPException(404, "ticket not found")
     decision = {"approve": "approved", "reject": "rejected",
                 "modify": "modified"}[body.decision]
-    if decision == "modified" and not body.edited_params:
-        raise HTTPException(422, "decision 'modify' requires edited_params")
+
+    # Separation of duties: the agent that proposed an action may never be the
+    # principal that approves it (found in adversarial testing - a malicious
+    # agent self-approved its own exfiltration ticket).
+    if decision != "rejected" and body.decided_by == ticket.get("agent_id"):
+        raise HTTPException(403, "separation of duties: the proposing agent "
+                                 "cannot approve its own action")
+
+    if decision == "modified":
+        if not body.edited_params:
+            raise HTTPException(422, "decision 'modify' requires edited_params")
+        # Edited parameters are a NEW proposal and are re-governed from
+        # scratch. Without this, a reviewer could turn an approved 3-record
+        # delete into a 5000-record delete and skip the hard overrides
+        # entirely - proven by adversarial testing.
+        # Side-effect-free re-governance of the edited parameters (no new
+        # ticket, no audit row - this is an authority check, not a proposal).
+        recheck = evaluate_action(
+            policy, tool=ticket["tool"], params=body.edited_params,
+            affected_count=max(1, observed_blast_radius(body.edited_params)),
+            model_confidence=0.5, calibration_adjustment=0.0)
+        tier = {Route.AUTONOMOUS: 0, Route.CONFIRM: 1, Route.REVIEW: 2}
+        ticket_tier = 2 if ticket.get("kind") == "review" else 1
+        if tier[recheck.route] > ticket_tier:
+            # The edit ESCALATES beyond the authority of this ticket (e.g. a
+            # 3-record delete edited into a 5000-record delete). Refuse to
+            # execute; the reviewer must raise a fresh, higher-tier proposal.
+            raise HTTPException(409, {
+                "error": "edited parameters escalate risk beyond this ticket's tier",
+                "required_route": recheck.route.value,
+                "matched_override": recheck.matched_override,
+                "reason": recheck.reason,
+            })
     updated = repo.decide_ticket(ticket_id, decision, body.decided_by, body.note)
     if not updated:
         raise HTTPException(409, "ticket already decided")
@@ -143,8 +203,9 @@ def decide_ticket(ticket_id: str, body: Decision) -> dict:
 
 
 @app.get("/queue")
-def queue(status: str = "pending", kind: str | None = None) -> list[dict]:
-    return get_repo().list_tickets(status=status, kind=kind)
+def queue(status: str = "pending", kind: str | None = None,
+          reviewer: str = Depends(require_reviewer)) -> list[dict]:
+    return get_repo().list_tickets(status=status or "pending", kind=kind)
 
 
 # ---------- audit ----------
@@ -156,11 +217,28 @@ def audit(session_id: str | None = None, agent_id: str | None = None,
     return get_repo().query_audit(session_id=session_id, agent_id=agent_id, limit=limit)
 
 
+_TERMINAL_OUTCOMES = {"executed", "executed_modified", "denied", "failed", "skipped"}
+
+
 @app.post("/audit/{action_id}/outcome")
-def report_outcome(action_id: str, body: OutcomeUpdate) -> dict:
-    ok = get_repo().update_audit_outcome(action_id, body.outcome, body.decided_by)
-    if not ok:
+def report_outcome(action_id: str, body: OutcomeUpdate,
+                   reviewer: str = Depends(require_reviewer)) -> dict:
+    # The audit trail is append-only in spirit: an outcome may be written once,
+    # from the pending state. Adversarial testing showed an attacker could
+    # otherwise rewrite history (mark a denied action "executed", or a real
+    # execution "failed") to cover tracks.
+    repo = get_repo()
+    record = repo.get_audit(action_id)          # keyed lookup, never a scan
+    if record is None:
         raise HTTPException(404, "action not found")
+    current = record.get("final_outcome", "pending")
+    if current in _TERMINAL_OUTCOMES:
+        raise HTTPException(409, f"outcome already recorded as '{current}'; "
+                                 "the audit trail is append-only")
+    # The storage layer re-checks the pending precondition atomically, so
+    # concurrent reporters across Lambda instances cannot both win.
+    if not repo.update_audit_outcome(action_id, body.outcome, body.decided_by):
+        raise HTTPException(409, "outcome already recorded")
     return {"action_id": action_id, "outcome": body.outcome}
 
 
@@ -191,6 +269,29 @@ def health() -> dict:
     checks["agent_mode"] = os.environ.get("AUTONOMYGATE_AGENT", "scripted")
     status = "healthy" if checks["storage"] == "ok" else "degraded"
     return {"status": status, "version": APP_VERSION, "checks": checks}
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(request, exc: RequestValidationError):
+    """Render validation errors safely.
+
+    Pydantic echoes the offending input back in the error payload - and a
+    non-finite float (NaN/Infinity) is not JSON-serializable, so rendering
+    the 422 itself used to crash into a 500. A malformed request must never
+    become a server error on a governance gate.
+    """
+    def _safe(node):
+        if isinstance(node, float) and not math.isfinite(node):
+            return str(node)
+        if isinstance(node, dict):
+            return {k: _safe(v) for k, v in node.items()}
+        if isinstance(node, (list, tuple)):
+            return [_safe(v) for v in node]
+        if isinstance(node, (str, int, bool, type(None))):
+            return node
+        return str(node)
+
+    return JSONResponse(status_code=422, content={"detail": _safe(exc.errors())})
 
 
 @app.exception_handler(Exception)

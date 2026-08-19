@@ -65,10 +65,14 @@ def _scripted_plan(task: str) -> list[dict]:
         to = m_to.group(0) if m_to else "teammate@ourcorp.com"
         return [{"tool": "send_email",
                  "params": {"to": to, "body": f"Regarding: {task}"}, "confidence": 0.7}]
-    m_upd = re.search(r"(?:update|change|set)\s+customer\s+#?(\d+)(?:'s)?\s+(\w+)\s+to\s+(\S+)", t)
+    # Match against the ORIGINAL task text: matching on the lowercased copy
+    # silently lowercased the value being written (a data-corruption bug).
+    m_upd = re.search(r"(?:update|change|set)\s+customer\s+#?(\d+)(?:'s)?\s+(\w+)"
+                      r"\s+to\s+(\S+)", task, re.IGNORECASE)
     if m_upd:
         return [{"tool": "crm_update",
-                 "params": {"customer_id": m_upd.group(1), "field": m_upd.group(2),
+                 "params": {"customer_id": m_upd.group(1),
+                            "field": m_upd.group(2).lower(),
                             "value": m_upd.group(3)}, "confidence": 0.85}]
     if m_read:
         return [{"tool": "crm_read",
@@ -190,10 +194,16 @@ class GroqPlanner:
         return specs
 
     def run(self, task: str, on_tool_call) -> list[str]:
+        import time as _time
+
         messages = [{"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": task}]
         transcript: list[str] = []
-        for _ in range(8):  # hard iteration cap
+        turns_taken = 0
+        retries_left = 3          # separate budget: retries must not consume
+        for _ in range(8 + 3):    # the 8 governed iterations (found in testing)
+            if turns_taken >= 8:
+                break
             resp = self.http.post("/chat/completions", json={
                 "model": self.model,
                 "messages": messages,
@@ -201,18 +211,21 @@ class GroqPlanner:
                 "temperature": 0,
                 "max_tokens": 1024,
             })
-            if resp.status_code == 404:
-                # Configured model retired from Groq's catalog - self-heal.
-                self.model = self._pick_available_model()
-                continue
-            if resp.status_code == 429:
-                # Free-tier rate limit: honor Retry-After (capped), then retry.
-                import time as _time
-                delay = min(float(resp.headers.get("retry-after", 5)), 25.0)
-                log.info('{"event": "groq_rate_limited", "retry_after_s": %s}', delay)
-                _time.sleep(delay)
+            if resp.status_code in (404, 429) and retries_left > 0:
+                retries_left -= 1
+                if resp.status_code == 404:
+                    self.model = self._pick_available_model()
+                else:
+                    try:      # RFC 9110 allows an HTTP-date here, not just seconds
+                        delay = min(float(resp.headers.get("retry-after", 5)), 25.0)
+                    except (TypeError, ValueError):
+                        delay = 5.0
+                    log.info('{"event": "groq_rate_limited", "retry_after_s": %s}',
+                             delay)
+                    _time.sleep(delay)
                 continue
             resp.raise_for_status()
+            turns_taken += 1
             msg = resp.json()["choices"][0]["message"]
             messages.append(msg)
             if msg.get("content"):
@@ -221,8 +234,23 @@ class GroqPlanner:
             if not tool_calls:
                 break
             for tc in tool_calls:
-                params = json.loads(tc["function"]["arguments"] or "{}")
-                confidence = float(params.pop("confidence", 0.7))
+                # Everything below is untrusted model output: malformed JSON, a
+                # non-dict payload, or a non-numeric confidence must not crash
+                # the run - the model is told what went wrong and retries.
+                try:
+                    params = json.loads(tc["function"]["arguments"] or "{}")
+                    if not isinstance(params, dict):
+                        raise ValueError("tool arguments must be a JSON object")
+                except (json.JSONDecodeError, ValueError) as exc:
+                    messages.append({"role": "tool", "tool_call_id": tc["id"],
+                                     "content": f"ERROR: unusable tool arguments "
+                                                f"({exc}). Re-issue the call with "
+                                                f"valid JSON."})
+                    continue
+                try:
+                    confidence = float(params.pop("confidence", 0.7))
+                except (TypeError, ValueError):
+                    confidence = 0.0        # unparseable -> treat as no confidence
                 outcome_text = on_tool_call(tc["function"]["name"], params, confidence)
                 messages.append({"role": "tool",
                                  "tool_call_id": tc["id"],

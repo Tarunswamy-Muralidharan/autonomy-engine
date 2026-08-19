@@ -7,7 +7,7 @@ import os
 import boto3
 
 PREFIX = os.environ.get("AUTONOMYGATE_TABLE_PREFIX", "autonomygate")
-REGION = os.environ.get("AWS_REGION", "ap-south-1")
+REGION = os.environ.get("AWS_REGION", "us-east-1")
 
 ddb = boto3.client("dynamodb", region_name=REGION)
 

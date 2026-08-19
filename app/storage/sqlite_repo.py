@@ -77,6 +77,18 @@ class SqliteRepo(Repo):
             self._conn.commit()
             return cur.rowcount > 0
 
+    def get_audit(self, action_id: str):
+        with self._lock:
+            r = self._conn.execute(
+                "SELECT payload, outcome, decided_by FROM audit WHERE action_id = ?",
+                (action_id,)).fetchone()
+        if not r:
+            return None
+        rec = json.loads(r["payload"])
+        rec["final_outcome"] = r["outcome"]
+        rec["decided_by"] = r["decided_by"]
+        return rec
+
     def query_audit(self, session_id=None, agent_id=None, limit=100):
         q = "SELECT payload, outcome, decided_by FROM audit"
         conds, args = [], []
@@ -158,7 +170,7 @@ class SqliteRepo(Repo):
             ).fetchone()
         if not r:
             return {"action_type": action_type, "confirms": 0, "approvals": 0,
-                    "rejections": 0, "adjustment": 0.0}
+                    "rejections": 0, "modifications": 0, "adjustment": 0.0}
         return dict(r)
 
     def update_calibration(self, action_type: str, decision: str) -> dict:

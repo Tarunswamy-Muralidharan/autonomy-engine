@@ -1,0 +1,4 @@
+[tool.pytest.ini_options]
+# Confine collection to tests/: the gitignored build_lambda/ directory holds
+# manylinux wheels that pytest would otherwise import (and fail on).
+testpaths = ["tests"]

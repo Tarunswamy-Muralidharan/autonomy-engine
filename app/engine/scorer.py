@@ -45,6 +45,47 @@ class Policy:
         self.hard_overrides: list[dict] = self._raw.get("hard_overrides", [])
         self._reversibility: dict[str, float] = self._raw["reversibility"]
         self._regulatory: dict[str, float] = self._raw["regulatory"]
+        self._validate()
+
+    def _validate(self) -> None:
+        """Reject a malformed policy at load rather than at request time.
+
+        A typo in a rule's `tool` or a bad regex used to mean the rule
+        silently never fired - a fail-OPEN hole in the red lines. The service
+        now refuses to start on an invalid policy.
+        """
+        import re as _re
+
+        required = {"name", "tool", "route"}
+        seen: set[str] = set()
+        for i, rule in enumerate(self.hard_overrides):
+            missing = required - rule.keys()
+            if missing:
+                raise ValueError(f"hard_overrides[{i}] missing {sorted(missing)}")
+            if rule["name"] in seen:
+                raise ValueError(f"duplicate override name: {rule['name']}")
+            seen.add(rule["name"])
+            if rule["route"] not in ("AUTONOMOUS", "CONFIRM", "REVIEW"):
+                raise ValueError(f"{rule['name']}: invalid route {rule['route']!r}")
+            for key in ("matches", "not_matches", "all_recipients_match"):
+                if key in rule:
+                    try:
+                        _re.compile(rule[key])
+                    except _re.error as exc:
+                        raise ValueError(f"{rule['name']}.{key}: bad regex ({exc})")
+            has_matcher = any(k in rule for k in
+                              ("matches", "not_matches", "all_recipients_match"))
+            if "param" in rule and not has_matcher:
+                raise ValueError(f"{rule['name']}: 'param' without a matcher would "
+                                 f"fire on every call")
+            if has_matcher and "param" not in rule:
+                raise ValueError(f"{rule['name']}: matcher without a 'param' to "
+                                 f"apply it to")
+        if abs(sum(self.weights.values()) - 1.0) > 1e-6:
+            raise ValueError(f"risk weights must sum to 1.0, got "
+                             f"{sum(self.weights.values())}")
+        if not 0 <= self.autonomous_below <= self.review_above <= 100:
+            raise ValueError("thresholds must satisfy 0 <= autonomous <= review <= 100")
 
     def reversibility_for(self, tool: str) -> float:
         return float(self._reversibility.get(tool, self._reversibility["default"]))
@@ -59,13 +100,20 @@ def data_scope_score(affected_count: int) -> float:
     return min(100.0, 10.0 + 25.0 * math.log10(n))
 
 
+# The model reports its own confidence, so it must never be able to zero out
+# this dimension and single-handedly move an action into a lower tier.
+# Clamping the CEILING guarantees the confidence dimension always contributes
+# at least (1 - MAX_TRUSTED_CONFIDENCE) * 100 * weight to the risk score.
+MAX_TRUSTED_CONFIDENCE = 0.9
+
+
 def score_action(
     policy: Policy,
     tool: str,
     affected_count: int = 1,
     model_confidence: float = 0.8,
 ) -> RiskBreakdown:
-    model_confidence = min(1.0, max(0.0, model_confidence))
+    model_confidence = min(MAX_TRUSTED_CONFIDENCE, max(0.0, model_confidence))
     rev = policy.reversibility_for(tool)
     scope = data_scope_score(affected_count)
     reg = policy.regulatory_for(tool)

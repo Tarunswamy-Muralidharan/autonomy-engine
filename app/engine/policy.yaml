@@ -45,13 +45,30 @@ hard_overrides:
   - name: external_email_review
     tool: send_email
     param: to
-    not_matches: '.*@ourcorp\.com$'
+    # Fires unless EVERY recipient is internal. Multi-recipient strings like
+    # "attacker@evil.com, victim@ourcorp.com" previously slipped through a
+    # naive suffix test; each entry is now validated independently.
+    all_recipients_match: '[^@\s,;]+@ourcorp\.com'
     route: REVIEW
-    reason: "Email to an external domain always requires human review."
+    reason: "Email with any external recipient always requires human review."
 
   - name: full_export_review
     tool: export_report
     param: scope
-    matches: '^(all|\*)$'
+    # Case/whitespace-insensitive; an absent scope fails closed (the tool
+    # defaults to exporting everything).
+    matches: '\s*(all|\*)\s*'
     route: REVIEW
     reason: "Export of the full dataset always requires human review."
+
+  - name: large_export_review
+    tool: export_report
+    min_affected_count: 101
+    route: REVIEW
+    reason: "Export affecting more than 100 records always requires human review."
+
+  - name: bulk_update_review
+    tool: crm_update
+    min_affected_count: 101
+    route: REVIEW
+    reason: "Updating more than 100 records always requires human review."

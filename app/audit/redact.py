@@ -36,13 +36,24 @@ def redact_text(text: str) -> str:
 
 
 def redact_params(params: dict) -> dict:
-    """Redact every string value in a (possibly nested) params dict."""
+    """Redact PII anywhere in a (possibly nested) params structure.
+
+    Covers dict KEYS and NUMERIC values too: a 16-digit card sent as a JSON
+    number, or an email used as a key, would otherwise reach storage in the
+    clear (both found in adversarial testing).
+    """
     def _walk(value):
         if isinstance(value, str):
             return redact_text(value)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, int) and len(str(abs(value))) >= 10:
+            # long bare integers are card/phone/id shaped - scan them as text
+            redacted = redact_text(str(value))
+            return redacted if "[REDACTED" in redacted else value
         if isinstance(value, dict):
-            return {k: _walk(v) for k, v in value.items()}
-        if isinstance(value, list):
+            return {redact_text(str(k)): _walk(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
             return [_walk(v) for v in value]
         return value
     return _walk(params)
