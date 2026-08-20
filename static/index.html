@@ -63,6 +63,19 @@
     <button class="run" onclick="saveToken()">Sign in</button>
     <button class="no" onclick="signOut()">Sign out</button>
     <span class="risk">The proposal API is open to agents; the review plane is not.</span>
+    <div id="evaluator-note" style="display:none; margin-top:12px;
+         padding:10px 12px; background:#0d1117; border:1px dashed var(--line);
+         border-radius:6px;">
+      <b style="color:var(--amber)">Demo access</b>
+      <span class="risk">— this token is shown here on purpose so evaluators
+        can try the approval queue. Production uses per-reviewer Cognito
+        identities, not a shared token.</span>
+      <div style="margin-top:8px">
+        <code id="demo-token" style="user-select:all; color:var(--blue)"></code>
+        <button class="ok" style="margin-left:10px"
+                onclick="demoSignIn()">Use this token</button>
+      </div>
+    </div>
   </div>
 
   <div class="panel full">
@@ -85,7 +98,23 @@
 </div>
 
 <script>
+// Injected by the server at request time when demo mode is on, so the
+// credential never lives in this file (and therefore never in git history).
+// Empty string in every other environment -> the panel stays hidden.
+const DEMO_TOKEN = "{{DEMO_TOKEN}}";
+
 function token() { return localStorage.getItem("ag_token") || ""; }
+
+function initEvaluatorPanel() {
+  if (!DEMO_TOKEN || DEMO_TOKEN.indexOf("{{") === 0) return;
+  document.getElementById("demo-token").textContent = DEMO_TOKEN;
+  document.getElementById("evaluator-note").style.display = "";
+}
+
+function demoSignIn() {
+  document.getElementById("token").value = DEMO_TOKEN;
+  saveToken();                    // still VERIFIES against the server
+}
 
 async function saveToken() {
   // VERIFY before claiming success. Storing whatever was typed and showing
@@ -280,6 +309,7 @@ async function refresh() {
       </tr>`).join("") + "</table>";
 }
 
+initEvaluatorPanel();
 refresh();
 setInterval(refresh, 3000);
 </script>

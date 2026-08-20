@@ -138,6 +138,11 @@ def deploy(lam, role_arn: str, package: bytes) -> None:
         "AUTONOMYGATE_STORAGE": "dynamo",
         "AUTONOMYGATE_AGENT": "groq",
         "AUTONOMYGATE_PII": "comprehend",
+        # Hackathon evaluation: render the reviewer token on the dashboard so
+        # graders can exercise the approval queue from the URL alone. Off by
+        # default in app/main.py; set explicitly here, and unset it for any
+        # deployment that is not a public demo.
+        "AUTONOMYGATE_DEMO_MODE": "1",
     }}
     try:
         current = lam.get_function(FunctionName=FUNC_NAME)

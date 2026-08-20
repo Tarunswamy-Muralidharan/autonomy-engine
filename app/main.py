@@ -15,7 +15,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from .agent import tools as agent_tools
@@ -284,8 +284,25 @@ def calibration(action_type: str) -> dict:
 # ---------- dashboard & health ----------
 
 @app.get("/")
-def dashboard() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+def dashboard():
+    """Serve the dashboard.
+
+    In DEMO mode (AUTONOMYGATE_DEMO_MODE=1) the reviewer token is injected
+    into the page at request time so evaluators of this hackathon submission
+    can exercise the approval queue from the URL alone. Injecting at request
+    time - rather than writing the secret into static/index.html - keeps the
+    credential out of the repository and out of git history, and means
+    rotating the token updates the page automatically.
+
+    The auth mechanism itself is unchanged and still real: the review plane
+    401s without a valid bearer token, and this flag is off by default, so
+    any other deployment renders the placeholder and hides the panel.
+    """
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    demo_token = (REVIEWER_TOKEN
+                  if os.environ.get("AUTONOMYGATE_DEMO_MODE") == "1" else "")
+    html = html.replace("{{DEMO_TOKEN}}", demo_token)
+    return HTMLResponse(html)
 
 
 @app.get("/health")
