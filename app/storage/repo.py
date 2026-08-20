@@ -73,3 +73,5 @@ def reset_repo() -> None:
     """Test hook: forget the singleton so tests can use a fresh database."""
     global _repo
     _repo = None
+    from ..cumulative.ledger import reset_ledger_repo
+    reset_ledger_repo()

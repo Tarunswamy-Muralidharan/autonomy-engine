@@ -46,6 +46,18 @@ TABLES = [
         "KeySchema": [{"AttributeName": "action_type", "KeyType": "HASH"}],
         "BillingMode": "PAY_PER_REQUEST",
     },
+    {
+        "TableName": f"{PREFIX}-ledger",
+        "AttributeDefinitions": [
+            {"AttributeName": "pk", "AttributeType": "S"},
+            {"AttributeName": "sk", "AttributeType": "S"},
+        ],
+        "KeySchema": [
+            {"AttributeName": "pk", "KeyType": "HASH"},
+            {"AttributeName": "sk", "KeyType": "RANGE"},
+        ],
+        "BillingMode": "PAY_PER_REQUEST",
+    },
 ]
 
 for spec in TABLES:
@@ -57,5 +69,14 @@ for spec in TABLES:
         print(f"  {name} ready")
     except ddb.exceptions.ResourceInUseException:
         print(f"  {name} already exists")
+
+try:
+    ddb.update_time_to_live(
+        TableName=f"{PREFIX}-ledger",
+        TimeToLiveSpecification={"Enabled": True, "AttributeName": "expires_at"},
+    )
+    print(f"  {PREFIX}-ledger TTL enabled on expires_at")
+except ddb.exceptions.ClientError as exc:
+    print(f"  {PREFIX}-ledger TTL: {exc.response['Error']['Code']}")
 
 print("done.")
