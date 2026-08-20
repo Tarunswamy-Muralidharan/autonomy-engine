@@ -103,6 +103,13 @@
     <div id="task-out"></div>
   </div>
 
+  <div class="panel full">
+    <h2>Adaptive trust — calibration (bonus)
+      <span class="risk">consistent approvals lower risk; rejections and
+      modifications raise it — and the red lines never move</span></h2>
+    <div id="calibration"></div>
+  </div>
+
   <div class="panel">
     <h2>Pending approvals (confirm + review)</h2>
     <div id="queue"></div>
@@ -300,6 +307,8 @@ async function refresh() {
     document.getElementById("queue").innerHTML =
       '<div class="empty">Reviewer token required to view the approval queue.</div>';
     document.getElementById("audit").innerHTML = "";
+    document.getElementById("calibration").innerHTML =
+      '<div class="empty">Reviewer token required.</div>';
     return;
   }
   document.getElementById("queue").innerHTML = q.length === 0
@@ -313,6 +322,38 @@ async function refresh() {
         <td><button class="ok" onclick="decide('${t.ticket_id}','approve')">Approve</button>
             <button class="no" onclick="decide('${t.ticket_id}','reject')">Reject</button></td>
       </tr>`).join("") + "</table>";
+
+  // Calibration panel: the learning loop deserves front-page visibility -
+  // it is the bonus requirement, and a sub-line in the risk column buried it.
+  const TOOLS = ["db_delete", "crm_update", "send_email", "export_report",
+                 "crm_search", "crm_read"];
+  try {
+    const stats = await Promise.all(TOOLS.map(t => api("/calibration/" + t)));
+    document.getElementById("calibration").innerHTML =
+      "<table><tr><th>Action type</th><th>Human decisions</th>" +
+      "<th>Approval ratio</th><th>Risk adjustment</th></tr>" +
+      stats.map((c, i) => {
+        const dec = (c.approvals||0) + (c.rejections||0) + (c.modifications||0);
+        const ratio = dec ? Math.round(1000 * c.approvals / dec) / 10 : 0;
+        const adj = c.current_adjustment || 0;
+        let badge, label;
+        if (dec < 10) { badge = "out-skip"; label = `learning (${dec}/10)`; }
+        else if (adj < 0) { badge = "out-ok"; label = `${adj} · trusted`; }
+        else if (adj > 0) { badge = "out-no"; label = `+${adj} · distrusted`; }
+        else { badge = "out-wait"; label = "0 · neutral"; }
+        return `<tr>
+          <td>${esc(TOOLS[i])}</td>
+          <td class="risk">${c.approvals||0} approved · ${c.rejections||0}
+              rejected · ${c.modifications||0} modified</td>
+          <td class="risk">${dec ? ratio + "%" : "—"}
+              ${dec >= 10 ? (ratio >= 90 ? " (≥90% → trust)" : "") : ""}</td>
+          <td><span class="badge ${badge}">${label}</span></td>
+        </tr>`;
+      }).join("") + "</table>";
+  } catch (e) {
+    document.getElementById("calibration").innerHTML =
+      '<div class="empty">Sign in to view calibration.</div>';
+  }
 
   const a = await api("/audit?limit=12");
   document.getElementById("audit").innerHTML = a.length === 0
