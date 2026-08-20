@@ -58,7 +58,8 @@
 <div class="grid">
   <div class="panel full">
     <h2>Reviewer sign-in <span id="auth-state" class="risk"></span></h2>
-    <input id="token" type="password" placeholder="reviewer token (required to view the queue and decide)">
+    <input id="token" type="password" onkeydown="if(event.key==='Enter') saveToken()"
+         placeholder="reviewer token (required to view the queue and decide)">
     <button class="run" onclick="saveToken()">Sign in</button>
     <button class="no" onclick="signOut()">Sign out</button>
     <span class="risk">The proposal API is open to agents; the review plane is not.</span>
@@ -66,8 +67,8 @@
 
   <div class="panel full">
     <h2>Run the governed agent</h2>
-    <input id="task" type="text"
-           placeholder='e.g. "What plan is customer 1005 on?" / "Update customer 1003 plan to gold" / "Clean up all inactive customers"'>
+    <input id="task" type="text" onkeydown="if(event.key==='Enter') runTask()"
+           placeholder='Press Enter to run. e.g. "What is the email of customer 1007?" / "Update customer 1003 plan to enterprise" / "Delete customer records 1000 through 1200"'>
     <button class="run" onclick="runTask()">Run task</button>
     <div id="task-out"></div>
   </div>
@@ -137,9 +138,16 @@ async function api(path, opts = {}) {
   return r.json();
 }
 
+let taskRunning = false;
+
 async function runTask() {
   const task = document.getElementById("task").value.trim();
   if (!task) return;
+  // Enter is easy to hit twice. A double submit would fire two independent
+  // governed runs, doubling the audit rows and the queue - confusing on a
+  // demo and wasteful against a rate-limited model.
+  if (taskRunning) return;
+  taskRunning = true;
   const out = document.getElementById("task-out");
   out.textContent = "running...";
   try {
@@ -156,17 +164,22 @@ async function runTask() {
         "no tool calls proposed - the model declined or answered directly, "
         + "so the governance engine had nothing to evaluate.\n\n"
         + (said ? "model said: " + said : "(no message returned)");
-      refresh();
-      return;
+    } else {
+      out.textContent = run.steps.map(s =>
+        `${s.tool}  ->  ${s.route}` +
+        (s.matched_override ? `  [override: ${s.matched_override}]` : "") +
+        `  risk=${s.risk.total}` +
+        (s.result ? `\n  result: ${JSON.stringify(s.result).slice(0, 300)}` :
+                    `\n  held on ticket ${s.ticket_id}`)
+      ).join("\n\n");
     }
-    out.textContent = run.steps.map(s =>
-      `${s.tool}  ->  ${s.route}` +
-      (s.matched_override ? `  [override: ${s.matched_override}]` : "") +
-      `  risk=${s.risk.total}` +
-      (s.result ? `\n  result: ${JSON.stringify(s.result).slice(0, 300)}` :
-                  `\n  held on ticket ${s.ticket_id}`)
-    ).join("\n\n");
-  } catch (e) { out.textContent = "error: " + e.message; }
+  } catch (e) {
+    out.textContent = "error: " + e.message;
+  } finally {
+    // finally, not the happy path: an error or an early return must still
+    // release the lock, or the box would be dead until a page reload.
+    taskRunning = false;
+  }
   refresh();
 }
 
