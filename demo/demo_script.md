@@ -42,7 +42,16 @@ watch the audit log record both the decision and the outcome."
 
 ## 2:15 — Task 3: review path + hard override (60s)
 
-Task box: `Delete all inactive customers from the database`
+Task box: `Delete customer records 1000 through 1200`
+
+USE THIS EXACT PHRASING (verified live). Two traps found while rehearsing:
+"delete this entire database" makes the LLM refuse outright (its own
+guardrail, before governance is consulted) and you get no steps at all;
+"delete all inactive customers" makes it run a SEARCH first, which is
+itself held at CONFIRM (31.2 - it reads 120 PII records), so the run stops
+before the delete and you never reach the override. The phrasing above
+goes straight to db_delete with 201 records and fires the red line.
+Backup phrasing: `Purge customer accounts with ids from 1000 to 1150`
 
 SAY: "Now something dangerous. The model first searched for inactive
 customers — reads, autonomous — then proposed a bulk delete. Deletes are
