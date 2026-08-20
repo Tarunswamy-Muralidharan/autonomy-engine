@@ -216,7 +216,11 @@ def run_evaluation(policy: Policy, req: EvaluateRequest) -> EvaluateResponse:
             "session_id": req.session_id,
             "tool": req.tool,
             "params": req.params,                 # kept so approval can execute the action
-            "affected_count": req.affected_count,
+            # The reviewer sees the GOVERNED count, never the self-report: an
+            # action declaring 1 while carrying 5000 ids must not show "1" on
+            # the approval screen. Declared kept alongside for contrast.
+            "affected_count": effective_count,
+            "declared_count": req.affected_count,
             "risk_total": verdict.risk.total,
             # Bounded, redacted preview: this is display-only, and an
             # unbounded copy of params pushed the item toward DynamoDB's
@@ -232,7 +236,8 @@ def run_evaluation(policy: Policy, req: EvaluateRequest) -> EvaluateResponse:
         "ts": time.time(),
         "tool": req.tool,
         "params_redacted": redact_params(req.params),
-        "affected_count": req.affected_count,
+        "affected_count": effective_count,      # governed, not self-reported
+        "declared_count": req.affected_count,
         "risk_breakdown": verdict.risk.as_dict(),
         "calibration_adjustment": adjustment,
         "route": verdict.route.value,

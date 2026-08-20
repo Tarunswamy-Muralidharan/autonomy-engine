@@ -363,7 +363,12 @@ async function refresh() {
       a.map(r => `<tr>
         <td class="risk">${fmtTime(r.ts)}</td>
         <td>${esc(r.tool)}
-            <div class='risk'>${esc(shortParams(r.params_redacted))}</div></td>
+            <div class='risk'>${esc(shortParams(r.params_redacted))}</div>
+            <div class='risk'>affects ${r.affected_count}${
+              r.declared_count !== undefined &&
+              r.declared_count !== r.affected_count
+                ? " (agent declared " + r.declared_count + ")" : ""} ·
+              by ${esc(r.agent_id || "?")}</div></td>
         <td><span class="badge ${r.route}">${r.route}</span>${
             r.matched_override ? "<div class='risk'>override: " +
             esc(r.matched_override) + "</div>" : ""}
