@@ -163,6 +163,27 @@ async function decide(id, decision) {
 function esc(s) { const d = document.createElement("div");
   d.textContent = String(s); return d.innerHTML; }
 
+// The audit trail records `ts` as a unix timestamp. An audit log a human
+// cannot place in time is not much of an audit log - show local wall clock.
+function fmtTime(ts) {
+  if (!ts) return "";
+  const d = new Date(ts * 1000);
+  return d.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit",
+                                   second: "2-digit"});
+}
+
+// Compact one-line view of WHAT the action was. Already redacted server-side
+// before storage - this only shortens it for the table.
+function shortParams(p) {
+  if (!p || typeof p !== "object") return "";
+  return Object.entries(p).map(([k, v]) => {
+    let val = Array.isArray(v) ? `[${v.length} item${v.length === 1 ? "" : "s"}]`
+                               : String(v);
+    if (val.length > 40) val = val.slice(0, 40) + "...";
+    return `${k}=${val}`;
+  }).join("  ").slice(0, 90);
+}
+
 async function refresh() {
   const authEl = document.getElementById("auth-state");
   let q;
@@ -195,16 +216,24 @@ async function refresh() {
   const a = await api("/audit?limit=12");
   document.getElementById("audit").innerHTML = a.length === 0
     ? '<div class="empty">No actions evaluated yet.</div>'
-    : "<table><tr><th>Tool</th><th>Route</th><th>Risk (rev/scope/reg/conf)</th><th>Outcome</th></tr>" +
+    : "<table><tr><th>Time</th><th>Action</th><th>Route</th>" +
+      "<th>Risk (rev/scope/reg/conf)</th><th>Outcome</th></tr>" +
       a.map(r => `<tr>
-        <td>${esc(r.tool)}</td>
+        <td class="risk">${fmtTime(r.ts)}</td>
+        <td>${esc(r.tool)}
+            <div class='risk'>${esc(shortParams(r.params_redacted))}</div></td>
         <td><span class="badge ${r.route}">${r.route}</span>${
             r.matched_override ? "<div class='risk'>override: " +
-            esc(r.matched_override) + "</div>" : ""}</td>
+            esc(r.matched_override) + "</div>" : ""}
+            <div class='risk'>${esc(r.reason || "")}</div></td>
         <td class="risk">${r.risk_breakdown.total}
             (${r.risk_breakdown.reversibility}/${r.risk_breakdown.data_scope}/${
-              r.risk_breakdown.regulatory}/${r.risk_breakdown.confidence})</td>
-        <td>${esc(r.final_outcome)}</td>
+              r.risk_breakdown.regulatory}/${r.risk_breakdown.confidence})${
+            r.calibration_adjustment ? "<div class='risk'>calib: " +
+            r.calibration_adjustment + "</div>" : ""}</td>
+        <td>${esc(r.final_outcome)}${
+            r.decided_by && r.decided_by !== "system"
+              ? "<div class='risk'>by " + esc(r.decided_by) + "</div>" : ""}</td>
       </tr>`).join("") + "</table>";
 }
 
