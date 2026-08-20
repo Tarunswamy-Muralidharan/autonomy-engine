@@ -260,6 +260,19 @@ function outClass(o) {
   return "out-skip";
 }
 
+// "pending" on an AUTONOMOUS row is not a stalled action - it means the
+// engine AUTHORIZED it and the caller has not reported an outcome yet. That
+// is the normal external-integration path: /evaluate governs, the caller
+// owns the tool and reports back via /audit/{id}/outcome. Labelling it
+// "pending" made a correct state look like a failure.
+function outLabel(r) {
+  const o = String(r.final_outcome || "");
+  if (o === "pending" && r.route === "AUTONOMOUS") return "authorized";
+  if (o === "pending") return "awaiting decision";
+  if (o.startsWith("approved_pending")) return "approved, awaiting caller";
+  return o;
+}
+
 // Compact one-line view of WHAT the action was. Already redacted server-side
 // before storage - this only shortens it for the table.
 function shortParams(p) {
@@ -320,7 +333,7 @@ async function refresh() {
             r.calibration_adjustment ? "<div class='risk'>calib: " +
             r.calibration_adjustment + "</div>" : ""}</td>
         <td><span class="badge ${outClass(r.final_outcome)}">${
-            esc(r.final_outcome)}</span>${
+            esc(outLabel(r))}</span>${
             r.decided_by && r.decided_by !== "system"
               ? "<div class='risk'>by " + esc(r.decided_by) + "</div>" : ""}</td>
       </tr>`).join("") + "</table>";
