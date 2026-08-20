@@ -48,6 +48,22 @@ policy = Policy()
 REVIEWER_TOKEN = os.environ.get("AUTONOMYGATE_REVIEWER_TOKEN", "")
 
 
+def is_reviewer(authorization: str = Header(default="")) -> bool:
+    """Optional-auth variant of require_reviewer for endpoints that serve a
+    REDUCED view to unauthenticated callers instead of a 401.
+
+    Exists because of a disclosure chain found in external review: GET /audit
+    (then open) leaked ticket_ids, and GET /tickets/{id} (then open) returned
+    the ticket's RAW params - so an unauthenticated stranger could walk the
+    audit log into the one store that deliberately holds unredacted PII,
+    bypassing the /queue lock entirely.
+    """
+    if not REVIEWER_TOKEN:
+        return True  # unset (local dev): open, matching require_reviewer
+    scheme, _, token = authorization.partition(" ")
+    return scheme.lower() == "bearer" and secrets.compare_digest(token, REVIEWER_TOKEN)
+
+
 def require_reviewer(authorization: str = Header(default="")) -> str:
     """Auth for the REVIEW PLANE (queue, decisions, outcome reporting).
 
@@ -108,12 +124,22 @@ def agent_task(body: AgentTask) -> dict:
 
 # ---------- confirmation & review ----------
 
+# The fields an UNAUTHENTICATED caller may see on a ticket. This is exactly
+# what the external-integration contract needs (poll status, then execute):
+# no params, no preview - the raw params are the most sensitive data in the
+# system and are reserved for the authenticated review plane.
+_PUBLIC_TICKET_FIELDS = ("ticket_id", "status", "kind", "ts", "action_id",
+                         "decided_at", "risk_total")
+
+
 @app.get("/tickets/{ticket_id}")
-def get_ticket(ticket_id: str) -> dict:
+def get_ticket(ticket_id: str, reviewer: bool = Depends(is_reviewer)) -> dict:
     ticket = get_repo().get_ticket(ticket_id)
     if not ticket:
         raise HTTPException(404, "ticket not found")
-    return ticket
+    if reviewer:
+        return ticket
+    return {k: ticket[k] for k in _PUBLIC_TICKET_FIELDS if k in ticket}
 
 
 @app.post("/tickets/{ticket_id}/decision")
@@ -212,7 +238,11 @@ def queue(status: str = "pending", kind: str | None = None,
 
 @app.get("/audit")
 def audit(session_id: str | None = None, agent_id: str | None = None,
-          limit: int = 100) -> list[dict]:
+          limit: int = 100, reviewer: str = Depends(require_reviewer)) -> list[dict]:
+    # Reviewer-only: audit rows are redacted, but they still expose ticket_ids
+    # (a pivot into the raw-params store), agent identities, tool usage and
+    # decision patterns - operational intelligence an anonymous caller has no
+    # business reading on a governance product.
     limit = max(1, min(limit, 1000))
     return get_repo().query_audit(session_id=session_id, agent_id=agent_id, limit=limit)
 

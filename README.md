@@ -128,9 +128,10 @@ plane is authenticated** — a caller must not be able to approve its own action
 | `POST /evaluate` | open | Score + route one proposed action |
 | `POST /agent/task` | open | Give the sample agent a natural-language task |
 | `GET /queue` | **reviewer** | Pending approvals |
-| `GET /tickets/{id}` · `POST /tickets/{id}/decision` | **reviewer** | approve / reject / modify |
+| `GET /tickets/{id}` | open → status-only / **reviewer** → full | poll a ticket (raw params reviewer-only) |
+| `POST /tickets/{id}/decision` | **reviewer** | approve / reject / modify |
 | `POST /audit/{action_id}/outcome` | **reviewer** | Report an externally-executed outcome (write-once) |
-| `GET /audit` | open | Query the audit log by session / agent |
+| `GET /audit` | **reviewer** | Query the audit log by session / agent |
 | `GET /calibration/{action_type}` | open | Calibration stats + current adjustment |
 | `GET /health` · `GET /` · `GET /docs` | open | Health, dashboard, OpenAPI |
 
