@@ -30,8 +30,19 @@
   th { text-align:left; color:var(--dim); font-weight:600; padding:6px 8px;
        border-bottom:1px solid var(--line); }
   td { padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top;
-       word-break:break-word; overflow-wrap:anywhere; }
-  .badge { padding:2px 8px; border-radius:10px; font-size:12px; font-weight:700; }
+       overflow-wrap:break-word; }
+  /* Fixed layout for the audit table: columns get stable widths from the
+     header row instead of being negotiated from cell content - so neither a
+     hostile long token (stretch) nor aggressive breaking (collapse) can
+     change the geometry. */
+  #audit table { table-layout:fixed; width:100%; }
+  #audit th:nth-child(1) { width:12%; }
+  #audit th:nth-child(2) { width:30%; }
+  #audit th:nth-child(3) { width:26%; }
+  #audit th:nth-child(4) { width:17%; }
+  #audit th:nth-child(5) { width:15%; }
+  .badge { padding:2px 8px; border-radius:10px; font-size:12px;
+           font-weight:700; white-space:nowrap; display:inline-block; }
   .AUTONOMOUS { background:#12351c; color:var(--green); }
   .CONFIRM    { background:#3a2d10; color:var(--amber); }
   .REVIEW     { background:#3d1418; color:var(--red); }
