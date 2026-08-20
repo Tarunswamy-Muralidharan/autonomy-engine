@@ -45,6 +45,7 @@
   #task-out { margin-top:12px; font-family:Consolas, monospace; font-size:12px;
               white-space:pre-wrap; color:var(--dim); max-height:180px;
               overflow-y:auto; }
+  #audit { max-height:75vh; overflow-y:auto; }
 </style>
 </head>
 <body>
@@ -116,7 +117,10 @@
   </div>
 
   <div class="panel">
-    <h2>Live audit log</h2>
+    <h2>Live audit log
+      <button class="run" id="audit-toggle" style="float:right; font-size:12px;
+              padding:5px 10px" onclick="toggleAuditDepth()">Show full history</button>
+    </h2>
     <div id="audit"></div>
   </div>
 </div>
@@ -192,6 +196,23 @@ async function api(path, opts = {}) {
 }
 
 let taskRunning = false;
+
+// Audit depth: 12 recent rows by default (fast, demo-friendly); the toggle
+// fetches the full retained history (API cap: 1000). The poll keeps using
+// whichever depth is selected.
+let auditLimit = 12;
+
+function toggleAuditDepth() {
+  const btn = document.getElementById("audit-toggle");
+  if (auditLimit === 12) {
+    auditLimit = 1000;
+    btn.textContent = "Show recent only";
+  } else {
+    auditLimit = 12;
+    btn.textContent = "Show full history";
+  }
+  refresh();
+}
 
 async function runTask() {
   const task = document.getElementById("task").value.trim();
@@ -357,7 +378,7 @@ async function refresh() {
       '<div class="empty">Sign in to view calibration.</div>';
   }
 
-  const a = await api("/audit?limit=12");
+  const a = await api("/audit?limit=" + auditLimit);
   document.getElementById("audit").innerHTML = a.length === 0
     ? '<div class="empty">No actions evaluated yet.</div>'
     : "<table><tr><th>Time</th><th>Action</th><th>Route</th>" +
