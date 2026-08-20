@@ -209,23 +209,22 @@ The red line fired first."
 
 ---
 
-# PART THREE — what changed under review (7:00 – 8:40)
+# PART THREE — where I found weaknesses (7:00 – 8:40)
 
-## 7:00 — The critique  ▸ DECK slide 11
+## 7:00 — Auditing my own design  ▸ DECK slide 11
 
-SAY: "I had this reviewed by a senior engineer, as if deciding whether to
-fund it. Nine out of ten as a project — four out of ten for *enterprise*
-readiness, with twenty-four criticisms.
+SAY: "Once the core was working and tested, I went back and attacked the
+design itself — not looking for bugs this time, but asking where the
+*governance model* was too simple to survive a real enterprise.
 
-Rather than defend it, I took it at face value and rebuilt. Here's the before
-and after of the five that mattered."
+I found five things I wasn't happy with. Here's the before and after of each."
 
 ## 7:15 — Improvement 1  ▸ DECK slide 12
 
-SAY: "The sharpest one. Updating a customer's *nickname* and setting their
-*account status to terminated* are the same tool — so my engine scored them
-identically. It was asking 'how dangerous is this category of tool' when it
-needed to ask 'how dangerous is *this* operation'.
+SAY: "The one that bothered me most. Updating a customer's *nickname* and
+setting their *account status to terminated* are the same tool — so my engine
+scored them identically. It was asking 'how dangerous is this category of
+tool' when it needed to ask 'how dangerous is *this* operation'.
 
 Now each tool carries a contract declaring per-field sensitivity. A critical,
 irreversible field floors the reversibility score at 90 even though the tool's
@@ -234,7 +233,7 @@ undeclared field could be `account_status` under another spelling."
 
 ## 7:35 — Improvement 2  ▸ DECK slide 13
 
-SAY: "The one the reviewer said scared him most. My red line catches one
+SAY: "This is the one that genuinely worried me. My red line catches one
 delete of 101 records. So the agent issues 101 deletes of *one* record each —
 every one individually harmless, every one autonomous. I'd converted one
 dangerous operation into a hundred safe-looking ones.
