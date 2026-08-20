@@ -1,239 +1,320 @@
-# AutonomyGate — Demo Video Script (target 6–7 minutes)
+# AutonomyGate — Demo Video Script (target 8–9 minutes)
 
-Slide-driven, with the live system as the centrepiece.
+Layer-by-layer walkthrough. Three surfaces, rotated deliberately:
 
-**Open before recording:**
-- `Desktop\AutonomyGate_Diagrams.pptx` — press **F5** for fullscreen, arrows to move
-- Live dashboard: https://qg37onlhnh.execute-api.us-east-1.amazonaws.com
-- AWS console: Lambda page, DynamoDB tables page
-- GitHub: https://github.com/Tarunswamy-Muralidharan/autonomy-engine
+- **DECK** — `Desktop\AutonomyGate_Layers.pptx` (F5 for fullscreen)
+- **CODE** — Antigravity, repo `C:\Users\tmswa\Code\autonomy-engine`
+- **LIVE** — https://qg37onlhnh.execute-api.us-east-1.amazonaws.com
 
-**How to switch:** `Alt+Tab` between the slide show and Chrome. Practise the
-switch twice before you record — it is the only fiddly bit.
+Pattern for every layer: **slide explains it → code proves it → live shows it.**
 
-**Rate-limit note:** Groq's free tier throttles per minute. Each agent task is
-followed by ~30s of talking, which is exactly the spacing you need.
+**Before recording:** open all three, and practise `Alt+Tab` between them
+until it's automatic. In Antigravity, pre-open these tabs in this order so you
+can jump without searching:
 
-**Slide map** (deck = `AutonomyGate_Diagrams.pptx`)
-
-| Slide | When |
-|---|---|
-| 1 cover | 0:00 cold open |
-| 2 architecture | 3:40 AWS segment |
-| 3 life of one action | 0:35 before the demos |
-| 4 log scale | optional, skip if tight |
-| 5 thresholds + calibration | 5:10 bonus feature |
-| 6 ticket lifecycle | optional |
-| 7 circuit breaker | 4:20 Comprehend |
-| 8 V2 pipeline | 5:50 what's next |
-| 9 V2 salami | 6:05 |
-| 10 V2 capabilities | 6:20 |
-| 13 closing line | 6:45 |
+```
+app/main.py
+app/engine/service.py
+app/engine/scorer.py
+app/engine/router.py
+app/engine/policy.yaml
+app/agent/tools.py
+```
 
 ---
 
-## 0:00 — Cold open  ▸ SLIDE 1 (cover)
+# PART ONE — how it works (0:00 – 5:30)
 
-SAY: "This is AutonomyGate — my solution to problem statement 9.1. It's a
-graduated autonomy engine for AI agents, and it's deployed live on AWS.
+## 0:00 — Cold open  ▸ DECK slide 1
 
-The problem it solves is simple to state. Companies want AI agents that can
-actually *do* things — read records, send emails, delete data. But full trust
-means one bad action is irreversible, and zero trust means a human approves
-five hundred things a day, stops reading, and rubber-stamps. Both extremes
-fail.
+SAY: "This is AutonomyGate, my solution to problem statement 9.1 — a
+graduated autonomy engine for AI agents, deployed live on AWS.
 
-So instead of trusting an agent completely or not at all, this system grants
-autonomy in *degrees* — matched to how dangerous each individual action is."
+The problem: companies want agents that can actually *do* things. But full
+trust means one bad action is unrecoverable, and zero trust means a human
+approves five hundred things a day, stops reading, and rubber-stamps. Both
+extremes fail.
 
-## 0:35 — How it works  ▸ SLIDE 3 (life of one action)
+So this system grants autonomy in *degrees*, matched to how dangerous each
+individual action is. I'll walk you through it layer by layer, and show you
+the code that implements each one."
 
-SAY: "Here's what happens to every single action an agent proposes.
+## 0:30 — The stack  ▸ DECK slide 2
 
-The agent describes what it wants to do. The engine scores it across four
-dimensions: can this be undone, how many records does it touch, is the data
-regulated, and how confident is the model in its own plan. That produces a
-score out of a hundred.
+SAY: "Eight layers. A request enters at the top and either executes, waits
+for a user, or waits for a reviewer — and whatever happens, it gets written
+down.
 
-Then — and this ordering matters — **hard overrides are checked before the
-score is used**. If an explicit rule matches, the score becomes irrelevant.
+One property holds across all eight, and it's the thing that makes a
+governance system trustworthy: **every layer fails closed**. On any error —
+bad input, storage down, unknown tool, unreadable policy — the system routes
+toward *more* oversight, never less. There is no failure mode anywhere in here
+that grants more autonomy."
 
-Below thirty, it executes autonomously. Between thirty and sixty-five, it
-pauses for the user to confirm. Above that, a human reviewer must approve it.
-And every action is written to an audit trail, including the ones that ran
-automatically.
+---
 
-Let me show you all three tiers on the live system."
+## 1:00 — LAYER 1: the API surface  ▸ DECK slide 3 → CODE
 
-*(Alt+Tab to Chrome, dashboard)*
+SAY: "Layer one. The API is split into two planes with different trust."
 
-## 1:10 — Task 1: autonomous  ▸ LIVE
+▸ **CODE: `app/main.py`** — scroll to `@app.post("/evaluate")`
 
-Type: `What is the email of customer 1007?` — press Enter.
+SAY: "This is the proposal plane — deliberately open. Any agent, in any
+framework, must be able to ask 'may I do this?'. Locking it would make the
+gate unusable."
 
-SAY: "The agent here is a real LLM — Llama, served by Groq — working against a
-mock CRM of four hundred customers. It chose a read tool.
+▸ scroll to `decide_ticket`, highlight the separation-of-duties check
 
-The engine scored it about sixteen: reads are reversible, it touches one
-record, and the model was confident. Below thirty, so it executed immediately
-and the result came straight back. No human involved — because nothing about
-this action needed one. That's the *graduated* part."
+SAY: "And this is the review plane — locked. It needs a reviewer token,
+because red-teaming proved the obvious attack: propose a dangerous action,
+read the ticket id out of the response, then approve your own ticket.
+Governance the governed party can overrule is decoration.
 
-## 2:00 — Task 2: confirmation  ▸ LIVE
+And even *with* a valid token — this check — the identity that proposed an
+action can never be the one that approves it."
 
-Type: `Update customer 1003's plan to enterprise` — Enter.
+## 1:40 — LAYER 2: validation  ▸ DECK slide 4 → CODE
 
-SAY: "An update is different — it changes data. This scored in the middle
-band, so nothing executed. It's waiting in the approval panel with a preview
-of exactly what will change."
+▸ **CODE: `app/engine/service.py`** — `class EvaluateRequest`
 
-*(Click Approve)*
+SAY: "Layer two looks boring. It isn't.
 
-"And now the important part: on approval, the engine executes the action
-itself, server-side, using the parameters **frozen at the moment it was
-scored**. The agent cannot swap the payload between me approving it and it
-running. Watch the audit log — the outcome just flipped to executed, and it
-records who decided."
+For most web apps a 500 error is embarrassing. For a governance gate it's a
+*security failure* — because if the gate crashes while evaluating an action,
+that action was never scored, never routed, and never audited.
 
-## 3:00 — Task 3: the red line  ▸ LIVE
+So I fuzzed it. NaN in the confidence field, ten-to-the-three-hundred in the
+count, dictionaries two hundred levels deep. Every one of those was a crash
+once. Every constraint you see here is a crash converted into a clean,
+logged, fail-closed rejection."
 
-Type: `Delete customer records 1000 through 1200` — Enter.
+## 2:15 — LAYER 3: the scorer  ▸ DECK slide 5 → CODE
 
-> **Use this exact phrasing.** Two traps found while rehearsing:
-> "delete this entire database" makes the LLM refuse outright — its own
-> guardrail, before governance is ever consulted — and you get no steps at
-> all. "delete all inactive customers" makes it run a *search* first, which is
-> itself held at CONFIRM because it reads 120 PII records, so the run stops
-> before the delete. Backup: `Purge customer accounts with ids from 1000 to 1150`
+▸ **CODE: `app/engine/scorer.py`** — `score_action`
 
-SAY: "Now something genuinely dangerous — a bulk delete, two hundred and one
-records.
+SAY: "Layer three is the risk calculation, and the most important thing about
+it is what it *isn't*: it is not an LLM call.
 
-Look at the audit row: `override: bulk_delete_always_review`. My policy file
-says bulk deletion above a hundred records **always** goes to human review, no
-matter what the score says. The score here was sixty-two — but that number
-never got a vote.
+Four dimensions — can this be undone, how many records, is the data
+regulated, and how sure is the model. Weighted sum, out of a hundred.
 
-This is the core principle of the whole project: **the scorer advises, the
-policy rules**. A probabilistic model can never overrule an explicit business
-rule."
+Why not ask a model? Because governance must be deterministic — the same
+action must score the same six months later when an auditor asks. It must be
+explainable, testable, and free, because it runs in front of *every* action.
+And decisively: the model is the thing being governed. Letting it score
+itself is letting the defendant pass sentence."
 
-*(Click Reject)*
+▸ highlight `MAX_TRUSTED_CONFIDENCE = 0.9`
 
-"Denied. Nothing was deleted, and the agent was told it cannot retry."
+SAY: "That's the one input the model controls — its own confidence. So it's
+capped. Claiming 100% certainty buys exactly nothing above 0.9. Low
+confidence is trusted completely, because volunteering doubt is evidence
+against yourself. Asymmetric trust, in one line."
 
-## 3:40 — The AWS architecture  ▸ SLIDE 2
+## 3:00 — LAYER 4: the router  ▸ DECK slide 6 → CODE
 
-SAY: "Here's what's actually running.
+▸ **CODE: `app/engine/router.py`** — `evaluate_action`
 
-API Gateway is the public door. The engine runs on Lambda — serverless, so it
-scales per request and costs nothing when idle. Every audit record, held
-ticket and calibration statistic persists in DynamoDB. Amazon Comprehend does
-PII detection, and Groq serves the agent's model.
+SAY: "Layer four decides. And the *order* here is the entire policy.
 
-There's no server to patch and nothing running while idle. The whole
-deployment is one script — no Docker."
+Step one: hard overrides. Step two: thresholds. Overrides are checked
+**before** the score is used — if an explicit rule matches, the score is
+recorded but ignored.
 
-*(Optional: Alt+Tab to the AWS console, show the Lambda page and DynamoDB
-tables for ~10 seconds, then come back.)*
+That's the core principle of the whole project: **the scorer advises, the
+policy rules.** A probabilistic number can never overrule an explicit
+business rule."
 
-## 4:20 — Comprehend, and failing safely  ▸ SLIDE 7 (circuit breaker)
+▸ **CODE: `app/engine/policy.yaml`**
 
-SAY: "There's a second AWS AI service in here, solving a real problem.
+SAY: "And here are the rules themselves — in a config file, not in code.
+Weights, thresholds, red lines. A compliance officer can change 'bulk delete
+above 100 records' to 10 without a developer, a code review, or a redeploy.
+That's what declarative governance means."
 
-Audit logs are themselves sensitive — agent parameters carry customer data —
-so I redact before anything is stored. Regex handles PII that has a *shape*:
-an email has an at-sign, a card has sixteen digits. But regex is structurally
-blind to PII that only has *meaning* — a person's name, a street address.
-That's what Amazon Comprehend catches.
+▸ back to `router.py`, highlight `normalize_tool` and `review_score = max(...)`
 
-And look at how it's wired. Regex **always** runs, so redaction can never get
-weaker than the offline baseline. Comprehend is bounded to a two-second
-timeout, and if it fails three times in a row this circuit breaker opens and
-the system falls back to regex entirely.
+SAY: "Two details worth pointing at. Tool names are canonicalized before
+matching — red-teaming got a bulk delete past the red line four ways:
+uppercase, a leading space, a trailing newline, and a unicode hyphen that
+looks identical in every font.
 
-The reasoning: a privacy feature that can take down the governance gate is
-worse than no privacy feature at all."
+And this `max`: earned trust may open the autonomous door, but it can never
+pull an action *out* of human review."
 
-## 5:10 — It learns  ▸ SLIDE 5 (thresholds + calibration)
+## 3:45 — LAYER 5: blast radius  ▸ DECK slide 7 → CODE
 
-SAY: "This is the bonus requirement, and it's live.
+▸ **CODE: `app/engine/service.py`** — `observed_blast_radius`
 
-If humans consistently approve an action type without modifying it, its risk
-drifts *down* toward autonomous. If they reject or modify it, risk drifts
-*up*. On the deployed system right now, `db_delete` has twenty-three
-approvals, so it carries a minus-ten adjustment — you can see it in the audit
-rows.
+SAY: "Layer five is my favourite catch. The agent reports how many records it
+affects — `affected_count`. That's a field the *governed party* fills in about
+itself.
 
-But look at the asymmetry on this diagram. Earned trust may open the
-autonomous door — it can **never** pull an action out of human review. And it
-can never touch a hard override.
+Red-teaming sent a delete declaring one record, while passing five thousand
+record ids. The declared number is what got scored and what the reviewer's
+screen displayed: 'a delete affecting one record'.
 
-So the system learns, and the red lines don't move."
+So now the engine walks the actual payload, finds the largest collection at
+any depth, and governs on the worst of the two. An agent may under-*report* —
+it can never under-*govern*. The information the attacker needs to do the
+damage is the same information that convicts them."
 
-## 5:50 — Where it goes next  ▸ SLIDES 8, 9, 10
+## 4:20 — LAYERS 6, 7, 8  ▸ DECK slides 8, 9, 10
 
-SAY: "I also had this reviewed by a senior engineer who scored it four out of
-ten for enterprise readiness. Rather than defend it, I took the critique at
-face value and built the answer — it's on the `v2-production` branch.
+SAY: "Layer six: a held action becomes a ticket, and approval executes the
+parameters **frozen at scoring time** — the agent can't swap the payload
+between the human's glance and execution. A ticket can be decided exactly
+once, and that's enforced by the database, not by application code, so two
+concurrent approvals can't both win.
 
-*(SLIDE 9 — salami)* The sharpest finding: my red line catches one bulk delete
-of a hundred records, but an agent could split it into a hundred single-record
-deletes, each individually harmless. So I added a per-session ledger — and
-this one is **live in production right now**: ten deletes of ten records pass,
-and the hundred-and-first record trips the same wire.
+Layer seven: the tool name is model-supplied, so it's checked against an
+allowlist *before* any attribute lookup. Red-teaming proposed a tool named
+`__init__` and the original code happily called it.
 
-*(SLIDE 10 — capabilities)* The second: for tools the engine doesn't own, an
-approval was just *advice* — the caller could ask about a Slack message and
-delete a database instead. Now approval issues a signed, single-use token
-bound to a hash of the exact parameters. Change one byte and the executor
-refuses it. Approval becomes enforcement.
+Layer eight: every evaluation is recorded — redacted, append-only, and
+sealed. Two layers of PII detection: regex for PII with a *shape*, and Amazon
+Comprehend for PII that only has *meaning* — names, street addresses. The
+Comprehend call has a two-second timeout and a circuit breaker, because a
+privacy feature that can take down the governance gate is worse than none."
 
-*(SLIDE 8 — pipeline)* Alongside those: per-reviewer identity so the audit
-says *who* approved, versioned policies so every verdict records which
-rulebook judged it, and tamper-evident audit hashes. Two hundred and thirty-
-four tests."
+---
 
-## 6:45 — Close  ▸ SLIDE 13
+# PART TWO — see it run (5:30 – 7:00)  ▸ LIVE
 
-SAY: "What this project brings is governance you can actually adopt. The
-rules are declarative — weights, thresholds and red lines live in a policy
-file, not in code, so a compliance officer can change them without a
-developer. Every decision is explainable and permanently recorded. And I
-red-teamed my own system, found eleven working bypasses, and closed every one
-with a regression test.
+SAY: "That's the architecture. Now the live system on AWS."
 
-Trust is earned, bounded, and verified — never assumed.
+**Task 1** — type `What is the email of customer 1007?`
+
+SAY: "Real LLM, Llama on Groq, against a mock CRM of 400 customers. Scored
+about sixteen — reversible, one record, confident — so it executed
+immediately. No human needed for safe actions."
+
+**Task 2** — type `Update customer 1003's plan to enterprise` → **Approve**
+
+SAY: "This one changes data. Middle band, so nothing ran — it's waiting with
+a preview. I approve… and the engine executes it server-side with the frozen
+parameters. The audit row now shows the outcome and who decided."
+
+**Task 3** — type `Delete customer records 1000 through 1200` → **Reject**
+
+> Use this exact phrasing. "delete this entire database" makes the LLM refuse
+> outright — its own guardrail, before governance is consulted. "delete all
+> inactive customers" runs a search first, which is itself held.
+
+SAY: "Two hundred and one records. Look at the audit row: `override:
+bulk_delete_always_review`. The score was sixty-two — but it never got a vote.
+The red line fired first."
+
+*(Reject)* "Denied. Nothing deleted, and the agent was told not to retry."
+
+---
+
+# PART THREE — what changed under review (7:00 – 8:40)
+
+## 7:00 — The critique  ▸ DECK slide 11
+
+SAY: "I had this reviewed by a senior engineer, as if deciding whether to
+fund it. Nine out of ten as a project — four out of ten for *enterprise*
+readiness, with twenty-four criticisms.
+
+Rather than defend it, I took it at face value and rebuilt. Here's the before
+and after of the five that mattered."
+
+## 7:15 — Improvement 1  ▸ DECK slide 12
+
+SAY: "The sharpest one. Updating a customer's *nickname* and setting their
+*account status to terminated* are the same tool — so my engine scored them
+identically. It was asking 'how dangerous is this category of tool' when it
+needed to ask 'how dangerous is *this* operation'.
+
+Now each tool carries a contract declaring per-field sensitivity. A critical,
+irreversible field floors the reversibility score at 90 even though the tool's
+base is 40. And an unknown field name is treated as critical — because an
+undeclared field could be `account_status` under another spelling."
+
+## 7:35 — Improvement 2  ▸ DECK slide 13
+
+SAY: "The one the reviewer said scared him most. My red line catches one
+delete of 101 records. So the agent issues 101 deletes of *one* record each —
+every one individually harmless, every one autonomous. I'd converted one
+dangerous operation into a hundred safe-looking ones.
+
+Now a ledger accumulates blast radius per session and per day. **And this one
+is live in production right now** — ten deletes of ten records pass, and the
+hundred-and-first record trips exactly the same wire as one bulk delete."
+
+## 7:55 — Improvement 3  ▸ DECK slide 14
+
+SAY: "For tools my engine doesn't own, approval was just *advice* — the
+caller could ask about a Slack message and delete a database instead.
+
+Now approval issues a signed, expiring, single-use capability bound to a hash
+of the exact parameters. The executor verifies it against the very bytes it's
+about to run. Change one byte, it's refused. Replay it, the nonce is already
+burned. Approval became enforcement."
+
+## 8:15 — Improvements 4 and 5  ▸ DECK slides 15, 16
+
+SAY: "Identity: one shared reviewer token meant my audit said
+'authenticated-reviewer', never *who*. Now agents carry hashed API keys,
+reviewers have individual tokens, and the agent id comes from the credential
+instead of from the request body — which kills impersonation in three lines.
+
+And audit: conditional writes stop a *caller* rewriting history, but not
+someone with database access. So every record is now sealed with a content
+hash, windows are sealed into Merkle anchors, and a verification tool names
+the exact record that was altered. Tamper-*resistant* became
+tamper-*evident*.
+
+Two hundred and thirty-four tests, on the `v2-production` branch."
+
+## 8:40 — Close  ▸ DECK slide 17
+
+SAY: "One sentence re-derives every decision in this project: **trust is
+earned, bounded, and verified — never assumed.**
+
+The agent doesn't get trust — its counts are re-derived, its confidence
+capped, its tool names normalized. The reviewer doesn't get unlimited trust —
+separation of duties, edits re-governed. The learning loop doesn't — clamped
+and asymmetric. Even the policy file doesn't — it's validated at boot and the
+service refuses to start if it's malformed.
 
 That's AutonomyGate. Thank you."
 
 ---
 
-## Pre-flight checklist (10 minutes before recording)
+## Pre-flight checklist
 
-- [ ] Deck open, **F5** pressed once to confirm fullscreen works
-- [ ] Practise `Alt+Tab` between deck and Chrome twice
-- [ ] Dashboard hard-refreshed (`Ctrl+Shift+R`) and **signed in** with the token
-- [ ] `GET /health` returns healthy
-- [ ] One throwaway agent task run, to warm the Lambda (avoids a cold-start pause)
+- [ ] Deck open, F5 tested; Antigravity open with the six tabs above
+- [ ] Dashboard hard-refreshed (`Ctrl+Shift+R`) and **signed in**
+- [ ] `/health` healthy; one throwaway task run to warm the Lambda
 - [ ] Approval queue EMPTY
-- [ ] AWS console logged in, Lambda + DynamoDB tabs ready
-- [ ] Every unrelated tab and window closed; notifications muted
-- [ ] Mic tested — record 10 seconds and **play it back** before the real take
+- [ ] Alt+Tab between deck → code → browser practised twice
+- [ ] Mic tested: record 10 seconds and **play it back**
+- [ ] Notifications muted, unrelated windows closed
 
-## If something goes wrong on camera
+## If something goes wrong
 
-- **A task stalls** — keep talking. Groq rate-limits and recovers in ~20s.
-- **The LLM refuses** — the dashboard now says so explicitly. Use it: *"that's
-  the model's own guardrail firing before my engine is even consulted — two
-  different layers."* Then re-run with the scripted phrasing.
-- **Anything else** — don't restart. One clean take with a small stumble beats
-  five retakes and a missed deadline.
+- **Task stalls** — keep talking; Groq rate-limits and recovers in ~20s.
+- **LLM refuses** — the dashboard says so explicitly now. Use it: *"that's the
+  model's own guardrail, before my engine is even consulted — two different
+  layers."* Then re-run with the scripted phrasing.
+- **Anything else** — don't restart. One clean take with a stumble beats five
+  retakes and a missed deadline.
+
+## Running short? Cut in this order
+
+1. Layer 2 (validation) — 35s
+2. Layers 6–8 combined slide — trim to one sentence each
+3. Improvements 4 and 5 — mention in one line
+
+Never cut: the router/policy.yaml beat (3:00) or the salami-slicing
+improvement (7:35). Those are the two strongest moments in the video.
 
 ## Submission package
 
 1. Live URL: https://qg37onlhnh.execute-api.us-east-1.amazonaws.com
 2. GitHub: https://github.com/Tarunswamy-Muralidharan/autonomy-engine *(public)*
-3. Demo video (unlisted YouTube or Drive link)
-4. Reviewer token — it is also shown on the dashboard itself, so evaluators
-   can exercise the approval queue from the URL alone
+3. Demo video (unlisted YouTube or Drive)
+4. The reviewer token is shown on the dashboard itself, so evaluators can
+   exercise the approval queue from the URL alone
