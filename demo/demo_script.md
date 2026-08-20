@@ -1,4 +1,4 @@
-# AutonomyGate — Demo Video Script (target 8–9 minutes)
+# AutonomyGate — Demo Video Script (target 9–10 minutes)
 
 Layer-by-layer walkthrough. Three surfaces, rotated deliberately:
 
@@ -41,11 +41,11 @@ the code that implements each one."
 
 ## 0:30 — The stack  ▸ DECK slide 2
 
-SAY: "Eight layers. A request enters at the top and either executes, waits
+SAY: "Nine layers. A request enters at the top and either executes, waits
 for a user, or waits for a reviewer — and whatever happens, it gets written
 down.
 
-One property holds across all eight, and it's the thing that makes a
+One property holds across all nine, and it's the thing that makes a
 governance system trustworthy: **every layer fails closed**. On any error —
 bad input, storage down, unknown tool, unreadable policy — the system routes
 toward *more* oversight, never less. There is no failure mode anywhere in here
@@ -177,11 +177,51 @@ Comprehend for PII that only has *meaning* — names, street addresses. The
 Comprehend call has a two-second timeout and a circuit breaker, because a
 privacy feature that can take down the governance gate is worse than none."
 
+## 5:00 — LAYER 9: calibration, the bonus requirement  ▸ DECK slides 11, 12 → CODE
+
+▸ **CODE: `app/engine/calibration.py`** — the whole file is about 16 lines
+
+SAY: "Layer nine is the bonus requirement, and it's live.
+
+The problem statement asks: if users consistently confirm an action type
+*without modification*, lower its risk automatically; if they modify or reject
+it, raise it. Note 'without modification' — a human who edits the parameters
+before approving isn't expressing trust, they're saying the agent got it
+wrong. So modifications count on the *distrust* side of the ledger.
+
+And this is rules, not machine learning — deliberately. A governance system
+has to answer 'why is this trusted right now?' in one sentence: *because
+humans approved this exact action type twenty-three times without a single
+rejection.* A gradient can't give an auditor that sentence. Every number here
+is recomputable from the audit trail."
+
+▸ **DECK slide 12** — the four locks
+
+SAY: "Automatic risk reduction is obviously dangerous, so it has four locks.
+No adjustment at all until ten human decisions — one enthusiastic approval
+can't start loosening anything. Trust needs ninety percent near-unanimity;
+distrust triggers at forty. Trust moves it down ten points, distrust moves it
+up fifteen — distrust is cheaper to earn and stronger when earned. And the
+whole thing is capped at twenty.
+
+Then the asymmetry that matters most: earned trust may open the autonomous
+door, but it can **never** pull an action out of human review, and it never
+touches a hard override.
+
+**The system learns, and the red lines don't move.** I'll show you that
+happening on real data in a moment."
+
 ---
 
 # PART TWO — see it run (5:30 – 7:00)  ▸ LIVE
 
-SAY: "That's the architecture. Now the live system on AWS."
+> **This section demonstrates all four PS-9.1 success criteria in order.**
+> Task 1 = criterion 3 · Task 2 = criterion 2 · Task 3 = criterion 1 ·
+> the audit walkthrough = criterion 4. Don't skip the audit beat — it is a
+> graded requirement, not a nice-to-have.
+
+SAY: "That's the architecture. Now the live system on AWS — and this is
+exactly the four success criteria from the problem statement, in order."
 
 **Task 1** — type `What is the email of customer 1007?`
 
@@ -207,11 +247,38 @@ The red line fired first."
 
 *(Reject)* "Denied. Nothing deleted, and the agent was told not to retry."
 
+**Criterion 4 — the audit breakdown** — point at the `crm_update` row from Task 2
+
+SAY: "And the fourth success criterion: the risk breakdown has to be accurate
+and human-readable in the audit log. Here it is.
+
+Time, what the action was, the route, and the four dimensions in the open:
+reversibility forty, data scope ten, regulatory sixty, confidence twenty,
+total thirty-two point five.
+
+And that total isn't a black box — it's the weighted sum you can check
+yourself: point-three-five times forty, plus point-two-five times ten, plus
+point-two times sixty, plus point-two times twenty. Thirty-two point five.
+
+Plus a plain-English reason — 'in confirmation band' — and who decided it.
+Nothing about this decision is unexplainable six months from now."
+
+**Calibration on real data** — point at any `db_delete` row showing `calib: -10`
+
+SAY: "And here's the calibration I described, working live. This `calib:
+minus ten` means humans have approved `db_delete` twenty-three times on this
+system, so its risk has genuinely drifted down — single deletes now flow more
+easily than they did on day one.
+
+But look at the row above it: that two-hundred-record delete still went
+straight to REVIEW. The learning is real, and the red line is completely
+untouched by it. That's the entire design, visible in two rows."
+
 ---
 
 # PART THREE — where I found weaknesses (7:00 – 8:40)
 
-## 7:00 — Auditing my own design  ▸ DECK slide 11
+## 7:00 — Auditing my own design  ▸ DECK slide 13
 
 SAY: "Once the core was working and tested, I went back and attacked the
 design itself — not looking for bugs this time, but asking where the
@@ -219,7 +286,7 @@ design itself — not looking for bugs this time, but asking where the
 
 I found five things I wasn't happy with. Here's the before and after of each."
 
-## 7:15 — Improvement 1  ▸ DECK slide 12
+## 7:15 — Improvement 1  ▸ DECK slide 14
 
 SAY: "The one that bothered me most. Updating a customer's *nickname* and
 setting their *account status to terminated* are the same tool — so my engine
@@ -231,7 +298,7 @@ irreversible field floors the reversibility score at 90 even though the tool's
 base is 40. And an unknown field name is treated as critical — because an
 undeclared field could be `account_status` under another spelling."
 
-## 7:35 — Improvement 2  ▸ DECK slide 13
+## 7:35 — Improvement 2  ▸ DECK slide 15
 
 SAY: "This is the one that genuinely worried me. My red line catches one
 delete of 101 records. So the agent issues 101 deletes of *one* record each —
@@ -242,7 +309,7 @@ Now a ledger accumulates blast radius per session and per day. **And this one
 is live in production right now** — ten deletes of ten records pass, and the
 hundred-and-first record trips exactly the same wire as one bulk delete."
 
-## 7:55 — Improvement 3  ▸ DECK slide 14
+## 7:55 — Improvement 3  ▸ DECK slide 16
 
 SAY: "For tools my engine doesn't own, approval was just *advice* — the
 caller could ask about a Slack message and delete a database instead.
@@ -252,7 +319,7 @@ of the exact parameters. The executor verifies it against the very bytes it's
 about to run. Change one byte, it's refused. Replay it, the nonce is already
 burned. Approval became enforcement."
 
-## 8:15 — Improvements 4 and 5  ▸ DECK slides 15, 16
+## 8:15 — Improvements 4 and 5  ▸ DECK slides 17, 18
 
 SAY: "Identity: one shared reviewer token meant my audit said
 'authenticated-reviewer', never *who*. Now agents carry hashed API keys,
@@ -267,7 +334,7 @@ tamper-*evident*.
 
 Two hundred and thirty-four tests, on the `v2-production` branch."
 
-## 8:40 — Close  ▸ DECK slide 17
+## 8:40 — Close  ▸ DECK slide 19
 
 SAY: "One sentence re-derives every decision in this project: **trust is
 earned, bounded, and verified — never assumed.**
