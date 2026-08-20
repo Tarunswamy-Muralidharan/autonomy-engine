@@ -29,7 +29,8 @@
   table { width:100%; border-collapse:collapse; font-size:13px; }
   th { text-align:left; color:var(--dim); font-weight:600; padding:6px 8px;
        border-bottom:1px solid var(--line); }
-  td { padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  td { padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top;
+       word-break:break-word; overflow-wrap:anywhere; }
   .badge { padding:2px 8px; border-radius:10px; font-size:12px; font-weight:700; }
   .AUTONOMOUS { background:#12351c; color:var(--green); }
   .CONFIRM    { background:#3a2d10; color:var(--amber); }
@@ -303,6 +304,14 @@ function outLabel(r) {
   return o;
 }
 
+// Display-truncate an identifier. Red-team rows carry hostile agent names
+// (kilobyte AAAA... fuzz strings); rendered raw, one unbreakable token
+// forced the table thousands of pixels wide and crushed the layout.
+function shortId(s, n = 24) {
+  s = String(s || "?");
+  return s.length > n ? s.slice(0, n) + "…" : s;
+}
+
 // Compact one-line view of WHAT the action was. Already redacted server-side
 // before storage - this only shortens it for the table.
 function shortParams(p) {
@@ -391,7 +400,7 @@ async function refresh() {
               r.declared_count !== undefined &&
               r.declared_count !== r.affected_count
                 ? " (agent declared " + r.declared_count + ")" : ""} ·
-              by ${esc(r.agent_id || "?")}</div></td>
+              by ${esc(shortId(r.agent_id))}</div></td>
         <td><span class="badge ${r.route}">${r.route}</span>${
             r.matched_override ? "<div class='risk'>override: " +
             esc(r.matched_override) + "</div>" : ""}
@@ -404,7 +413,7 @@ async function refresh() {
         <td><span class="badge ${outClass(r.final_outcome)}">${
             esc(outLabel(r))}</span>${
             r.decided_by && r.decided_by !== "system"
-              ? "<div class='risk'>by " + esc(r.decided_by) + "</div>" : ""}</td>
+              ? "<div class='risk'>by " + esc(shortId(r.decided_by)) + "</div>" : ""}</td>
       </tr>`).join("") + "</table>";
 }
 
