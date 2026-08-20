@@ -1,4 +1,4 @@
-# AutonomyGate — Demo Video Script (target 9–10 minutes)
+# AutonomyGate — Demo Video Script (target ~10 minutes)
 
 Layer-by-layer walkthrough. Three surfaces, rotated deliberately:
 
@@ -213,7 +213,80 @@ happening on real data in a moment."
 
 ---
 
-# PART TWO — see it run (5:30 – 7:00)  ▸ LIVE
+# PART TWO — the AWS build (5:30 – 7:00)
+
+## 5:30 — Seven services, each with a job  ▸ DECK slide 13
+
+SAY: "Everything you've seen runs on AWS, and I want to be specific about
+*which* services and *why* — because 'it's on the cloud' isn't an
+architecture.
+
+**API Gateway** is the public door — TLS termination, throttling, and a
+stable URL in front of the function.
+
+**Lambda** runs the engine. Python 3.12, and the FastAPI app you just looked
+at runs unchanged there — an adapter called Mangum translates the Lambda
+event into the protocol FastAPI already speaks. Five lines of glue.
+
+**DynamoDB** holds four tables: the audit log, held tickets, calibration
+statistics, and the cumulative ledger.
+
+**Comprehend** is the second AI service — it finds PII that has *meaning*.
+
+**IAM** scopes the function to exactly those four tables and nothing else in
+the account. **CloudWatch** takes structured JSON for every decision. And in
+the v2 branch, **KMS** signs execution capabilities."
+
+## 5:55 — One request, service by service  ▸ DECK slide 14
+
+SAY: "Here's a single request travelling through them.
+
+API Gateway receives it. Lambda starts — or is already warm — and Mangum
+hands it to FastAPI. DynamoDB is read for the calibration adjustment, then
+the ledger records this action and hands back the session budget. The scoring
+and the red-line checks happen in-process, in memory, in microseconds.
+Comprehend is called to strip PII *before* anything is written. If the action
+is held, a ticket is written conditionally; either way the audit record is
+appended and sealed. CloudWatch gets one structured line describing the whole
+decision.
+
+A warm request is single-digit milliseconds of AWS work, plus one bounded
+Comprehend call."
+
+## 6:20 — Why these services  ▸ DECK slide 15
+
+SAY: "And the choices themselves — because each one was forced by a
+requirement, not picked because it was familiar.
+
+**Lambda instead of ECS or EKS**: this gate is bursty and event-driven. A
+container running twenty-four hours a day would cost money to sit idle.
+Per-request scaling matches the workload exactly.
+
+**DynamoDB instead of a relational database**: I needed *conditional writes*.
+'An audit outcome may be written once' and 'a ticket may be decided once' are
+enforced by the database itself, not by application code that a race between
+two concurrent Lambda instances could slip past. That was a correctness
+requirement, not a preference.
+
+**API Gateway instead of a Lambda Function URL**: Function URLs return 403 on
+new AWS accounts — I hit that. But it turned out to be the better answer
+anyway, because API Gateway is exactly where a JWT authorizer and usage plans
+go next.
+
+**Comprehend instead of Bedrock**: I originally built a Bedrock planner —
+it's in the repo, one environment variable away. But this account's AWS plan
+blocks every Bedrock model, including Amazon's own Nova. So rather than fake
+it, I moved the AWS AI surface to Comprehend, where it closes a real gap:
+regex finds emails and card numbers, but it is structurally blind to a
+person's name or a street address. Comprehend isn't decoration here — the
+audit trail is provably cleaner because of it."
+
+*(Optional: Alt+Tab to the AWS console — Lambda page, then DynamoDB tables —
+for ~15 seconds, then back.)*
+
+---
+
+# PART THREE — see it run (7:00 – 8:15)  ▸ LIVE
 
 > **This section demonstrates all four PS-9.1 success criteria in order.**
 > Task 1 = criterion 3 · Task 2 = criterion 2 · Task 3 = criterion 1 ·
@@ -276,9 +349,9 @@ untouched by it. That's the entire design, visible in two rows."
 
 ---
 
-# PART THREE — where I found weaknesses (7:00 – 8:40)
+# PART FOUR — where I found weaknesses (8:15 – 9:50)
 
-## 7:00 — Auditing my own design  ▸ DECK slide 13
+## 8:15 — Auditing my own design  ▸ DECK slide 16
 
 SAY: "Once the core was working and tested, I went back and attacked the
 design itself — not looking for bugs this time, but asking where the
@@ -286,7 +359,7 @@ design itself — not looking for bugs this time, but asking where the
 
 I found five things I wasn't happy with. Here's the before and after of each."
 
-## 7:15 — Improvement 1  ▸ DECK slide 14
+## 8:30 — Improvement 1  ▸ DECK slide 17
 
 SAY: "The one that bothered me most. Updating a customer's *nickname* and
 setting their *account status to terminated* are the same tool — so my engine
@@ -298,7 +371,7 @@ irreversible field floors the reversibility score at 90 even though the tool's
 base is 40. And an unknown field name is treated as critical — because an
 undeclared field could be `account_status` under another spelling."
 
-## 7:35 — Improvement 2  ▸ DECK slide 15
+## 8:50 — Improvement 2  ▸ DECK slide 18
 
 SAY: "This is the one that genuinely worried me. My red line catches one
 delete of 101 records. So the agent issues 101 deletes of *one* record each —
@@ -309,7 +382,7 @@ Now a ledger accumulates blast radius per session and per day. **And this one
 is live in production right now** — ten deletes of ten records pass, and the
 hundred-and-first record trips exactly the same wire as one bulk delete."
 
-## 7:55 — Improvement 3  ▸ DECK slide 16
+## 9:10 — Improvement 3  ▸ DECK slide 19
 
 SAY: "For tools my engine doesn't own, approval was just *advice* — the
 caller could ask about a Slack message and delete a database instead.
@@ -319,7 +392,7 @@ of the exact parameters. The executor verifies it against the very bytes it's
 about to run. Change one byte, it's refused. Replay it, the nonce is already
 burned. Approval became enforcement."
 
-## 8:15 — Improvements 4 and 5  ▸ DECK slides 17, 18
+## 9:25 — Improvements 4 and 5  ▸ DECK slides 20, 21
 
 SAY: "Identity: one shared reviewer token meant my audit said
 'authenticated-reviewer', never *who*. Now agents carry hashed API keys,
@@ -334,7 +407,7 @@ tamper-*evident*.
 
 Two hundred and thirty-four tests, on the `v2-production` branch."
 
-## 8:40 — Close  ▸ DECK slide 19
+## 9:50 — Close  ▸ DECK slide 22
 
 SAY: "One sentence re-derives every decision in this project: **trust is
 earned, bounded, and verified — never assumed.**
