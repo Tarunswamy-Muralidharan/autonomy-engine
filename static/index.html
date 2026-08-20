@@ -54,6 +54,7 @@
     <h2>Reviewer sign-in <span id="auth-state" class="risk"></span></h2>
     <input id="token" type="password" placeholder="reviewer token (required to view the queue and decide)">
     <button class="run" onclick="saveToken()">Sign in</button>
+    <button class="no" onclick="signOut()">Sign out</button>
     <span class="risk">The proposal API is open to agents; the review plane is not.</span>
   </div>
 
@@ -79,9 +80,45 @@
 <script>
 function token() { return localStorage.getItem("ag_token") || ""; }
 
-function saveToken() {
-  localStorage.setItem("ag_token", document.getElementById("token").value.trim());
+async function saveToken() {
+  // VERIFY before claiming success. Storing whatever was typed and showing
+  // "signed in" was misleading: a mistyped or truncated token looked
+  // identical to a valid one, and the failure only surfaced as an empty
+  // queue with a confusing message. Auth state must reflect the server's
+  // answer, not the presence of a string.
+  const el = document.getElementById("token");
+  const candidate = el.value.trim();
+  const authEl = document.getElementById("auth-state");
+
+  if (!candidate) {                       // empty box = sign OUT
+    localStorage.removeItem("ag_token");
+    authEl.textContent = "· signed out";
+    refresh();
+    return;
+  }
+  authEl.textContent = "· checking...";
+  try {
+    const r = await fetch("/queue?status=pending",
+                          {headers: {"Authorization": "Bearer " + candidate}});
+    if (r.status === 401) {
+      localStorage.removeItem("ag_token");
+      authEl.textContent = "· invalid token - check for a truncated copy";
+      return;                             // keep the value so it can be fixed
+    }
+    if (!r.ok) { authEl.textContent = "· error " + r.status; return; }
+  } catch (e) {
+    authEl.textContent = "· network error";
+    return;
+  }
+  localStorage.setItem("ag_token", candidate);
+  el.value = "";
+  refresh();
+}
+
+function signOut() {
+  localStorage.removeItem("ag_token");
   document.getElementById("token").value = "";
+  document.getElementById("auth-state").textContent = "· signed out";
   refresh();
 }
 
@@ -128,11 +165,16 @@ function esc(s) { const d = document.createElement("div");
 
 async function refresh() {
   const authEl = document.getElementById("auth-state");
-  authEl.textContent = token() ? "· signed in" : "· not signed in";
   let q;
   try {
     q = await api("/queue?status=pending");
+    authEl.textContent = "· signed in";   // proven by the server, not assumed
   } catch (e) {
+    // A stored token that stops working (rotated, redeployed) must not keep
+    // claiming "signed in" - say exactly which state we are in.
+    const stale = token() ? "· token rejected - sign in again"
+                          : "· not signed in";
+    authEl.textContent = stale;
     document.getElementById("queue").innerHTML =
       '<div class="empty">Reviewer token required to view the approval queue.</div>';
     document.getElementById("audit").innerHTML = "";
