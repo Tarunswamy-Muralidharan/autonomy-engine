@@ -36,11 +36,11 @@
      hostile long token (stretch) nor aggressive breaking (collapse) can
      change the geometry. */
   #audit table { table-layout:fixed; width:100%; }
-  #audit th:nth-child(1) { width:12%; }
-  #audit th:nth-child(2) { width:30%; }
-  #audit th:nth-child(3) { width:26%; }
-  #audit th:nth-child(4) { width:17%; }
-  #audit th:nth-child(5) { width:15%; }
+  #audit th:nth-child(1) { width:10%; }   /* Time    */
+  #audit th:nth-child(2) { width:26%; }   /* Action  */
+  #audit th:nth-child(3) { width:27%; }   /* Route   */
+  #audit th:nth-child(4) { width:22%; }   /* Risk    */
+  #audit th:nth-child(5) { width:15%; }   /* Outcome */
   .badge { padding:2px 8px; border-radius:10px; font-size:12px;
            font-weight:700; white-space:nowrap; display:inline-block; }
   .AUTONOMOUS { background:#12351c; color:var(--green); }
@@ -416,10 +416,13 @@ async function refresh() {
             r.matched_override ? "<div class='risk'>override: " +
             esc(r.matched_override) + "</div>" : ""}
             <div class='risk'>${esc(r.reason || "")}</div></td>
-        <td class="risk">${r.risk_breakdown.total}
-            (${r.risk_breakdown.reversibility}/${r.risk_breakdown.data_scope}/${
-              r.risk_breakdown.regulatory}/${r.risk_breakdown.confidence})${
-            r.calibration_adjustment ? "<div class='risk'>calib: " +
+        <td class="risk">
+            <div style="font-size:14px;color:var(--text)">${
+              r.risk_breakdown.total}</div>
+            <div style="white-space:nowrap">${r.risk_breakdown.reversibility}/${
+              r.risk_breakdown.data_scope}/${r.risk_breakdown.regulatory}/${
+              r.risk_breakdown.confidence}</div>${
+            r.calibration_adjustment ? "<div>calib: " +
             r.calibration_adjustment + "</div>" : ""}</td>
         <td><span class="badge ${outClass(r.final_outcome)}">${
             esc(outLabel(r))}</span>${
