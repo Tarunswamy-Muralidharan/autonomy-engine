@@ -252,8 +252,10 @@ function esc(s) { const d = document.createElement("div");
 function fmtTime(ts) {
   if (!ts) return "";
   const d = new Date(ts * 1000);
-  return d.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit",
-                                   second: "2-digit"});
+  const date = d.toLocaleDateString([], {day: "2-digit", month: "short"});
+  const time = d.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit",
+                                         second: "2-digit"});
+  return date + "<br>" + time;   // rendered inside the table cell's HTML
 }
 
 // Outcome -> colour class. Anything unrecognised falls to the neutral grey
