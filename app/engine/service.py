@@ -11,9 +11,12 @@ import uuid
 from pydantic import BaseModel, Field, field_validator
 
 from ..audit.redact import redact_params
+from ..cumulative.ledger import day_bucket, get_ledger_repo
+from ..cumulative.rules import check as cumulative_check
+from ..cumulative.rules import velocity_check
 from ..storage.repo import get_repo
 from .calibration import compute_adjustment
-from .router import Route, evaluate_action
+from .router import Route, Verdict, evaluate_action, normalize_tool
 from .scorer import Policy
 
 log = logging.getLogger("autonomygate.engine")
@@ -114,6 +117,25 @@ def observed_blast_radius(params: dict) -> int:
     return largest
 
 
+def _velocity_hot(ledger, tenant_id: str, agent_id: str, now: float,
+                  max_per_minute: int) -> bool:
+    """Is this agent over its per-minute proposal budget?
+
+    Fails CLOSED: a ledger read error is treated as 'hot' (escalate), never
+    as permission. Calling get_velocity as a bare argument to velocity_check
+    let a ledger hiccup propagate as a 500 - fail-OPEN on a governance gate.
+
+    included=True because run_evaluation records the proposal BEFORE any
+    red-line check, so the current proposal is already inside the counter.
+    """
+    try:
+        current = ledger.get_velocity(tenant_id, agent_id, now)
+    except Exception as exc:  # noqa: BLE001
+        log.error('{"event": "velocity_read_failed", "error": "%s"}', exc)
+        return True
+    return velocity_check(max_per_minute, current, included=True)
+
+
 def run_evaluation(policy: Policy, req: EvaluateRequest) -> EvaluateResponse:
     repo = get_repo()
     stats = repo.get_calibration(req.tool)
@@ -133,6 +155,52 @@ def run_evaluation(policy: Policy, req: EvaluateRequest) -> EvaluateResponse:
         model_confidence=req.model_confidence,
         calibration_adjustment=adjustment,
     )
+
+    now = time.time()
+    ledger = get_ledger_repo()
+    tool = normalize_tool(req.tool)
+    tenant_id = "default"
+
+    # Record BEFORE checking, then read totals-including-self. Check-then-record
+    # is a TOCTOU: N concurrent evaluations each read a stale 99 and all pass a
+    # max-100 rule. Recording first means this action's own weight is already in
+    # the window it is judged against. A ledger-write failure fails CLOSED
+    # (force REVIEW): a gate that cannot account for an action must not wave it
+    # through, but must also not 500 into no-decision (that is fail-open too).
+    ledger_ok = True
+    try:
+        ledger.record_action(tenant_id, req.agent_id, req.session_id, tool,
+                             effective_count, now)
+    except Exception as exc:  # noqa: BLE001
+        ledger_ok = False
+        log.error('{"event": "ledger_write_failed", "error": "%s"}', exc)
+
+    if verdict.matched_override is None and not ledger_ok:
+        verdict = Verdict(route=Route.REVIEW, risk=verdict.risk,
+                          matched_override="ledger_unavailable",
+                          reason="cumulative budget unavailable; routed to "
+                                 "review (fail closed)")
+    elif verdict.matched_override is None:
+        def _totals(window_kind: str, rule_tool: str) -> dict:
+            window_id = (req.session_id if window_kind == "session"
+                         else day_bucket(now))
+            return ledger.get_totals(tenant_id, req.agent_id, window_kind,
+                                     window_id, rule_tool)
+
+        # included=True: this action's weight is already recorded above, so
+        # check() must not add it a second time (would fire one action early).
+        cumulative = cumulative_check(policy.cumulative_rules, tool,
+                                      _totals, effective_count, included=True)
+        if cumulative is not None:
+            verdict = Verdict(route=Route(cumulative.route), risk=verdict.risk,
+                              matched_override=cumulative.name,
+                              reason=cumulative.reason)
+        elif verdict.route is Route.AUTONOMOUS and _velocity_hot(
+                ledger, tenant_id, req.agent_id, now,
+                policy.max_proposals_per_minute):
+            verdict = Verdict(route=Route.CONFIRM, risk=verdict.risk,
+                              matched_override="proposals_per_minute",
+                              reason=policy.velocity_reason)
 
     action_id = str(uuid.uuid4())
     ticket_id: str | None = None

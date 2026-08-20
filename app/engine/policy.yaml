@@ -72,3 +72,25 @@ hard_overrides:
     min_affected_count: 101
     route: REVIEW
     reason: "Updating more than 100 records always requires human review."
+
+cumulative_rules:
+  - name: bulk_delete_per_session
+    tool: db_delete
+    window: session
+    metric: affected
+    max: 100
+    route: REVIEW
+    reason: "More than 100 records deleted across one session requires human review (cumulative counterpart of bulk_delete_always_review)."
+
+  - name: deletes_per_day
+    tool: db_delete
+    window: day
+    metric: calls
+    max: 500
+    route: REVIEW
+    reason: "More than 500 delete calls in one UTC day requires human review."
+
+velocity:
+  max_proposals_per_minute: 60
+  route: CONFIRM
+  reason: "Proposal rate above the per-minute budget - every action requires confirmation while the agent is hot (queue-flood guard)."

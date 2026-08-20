@@ -43,6 +43,17 @@ class Policy:
         self.autonomous_below: float = self._raw["thresholds"]["autonomous_below"]
         self.review_above: float = self._raw["thresholds"]["review_above"]
         self.hard_overrides: list[dict] = self._raw.get("hard_overrides", [])
+        # Cumulative rules are red lines too: a malformed one that silently
+        # never fires is a fail-open hole, so parse_rules raises at load and
+        # the service refuses to start - same discipline as _validate.
+        from ..cumulative.rules import (DEFAULT_MAX_PROPOSALS_PER_MINUTE,
+                                        VELOCITY_REASON, parse_rules)
+        self.cumulative_rules = parse_rules(self._raw.get("cumulative_rules", []))
+        _velocity = self._raw.get("velocity", {})
+        self.max_proposals_per_minute = int(
+            _velocity.get("max_proposals_per_minute",
+                          DEFAULT_MAX_PROPOSALS_PER_MINUTE))
+        self.velocity_reason = _velocity.get("reason", VELOCITY_REASON)
         self._reversibility: dict[str, float] = self._raw["reversibility"]
         self._regulatory: dict[str, float] = self._raw["regulatory"]
         self._validate()

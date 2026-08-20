@@ -40,7 +40,7 @@ MANAGED_POLICIES = [
 # dynamodb:* on every table in the account, including DeleteTable.
 def _inline_policy(account: str) -> dict:
     table_arns = [f"arn:aws:dynamodb:{REGION}:{account}:table/{PREFIX}-{t}"
-                  for t in ("audit", "tickets", "calib")]
+                  for t in ("audit", "tickets", "calib", "ledger")]
     return {
         "Version": "2012-10-17",
         "Statement": [
