@@ -34,6 +34,12 @@
   .AUTONOMOUS { background:#12351c; color:var(--green); }
   .CONFIRM    { background:#3a2d10; color:var(--amber); }
   .REVIEW     { background:#3d1418; color:var(--red); }
+  /* Outcome states: an auditor should be able to scan the final column and
+     see what actually HAPPENED without reading a single word. */
+  .out-ok   { background:#12351c; color:var(--green); }  /* executed */
+  .out-wait { background:#3a2d10; color:var(--amber); }  /* pending  */
+  .out-no   { background:#3d1418; color:var(--red);   }  /* denied/failed */
+  .out-skip { background:#252c3a; color:var(--dim);   }  /* skipped  */
   .risk { font-family:Consolas, monospace; color:var(--dim); font-size:12px; }
   .empty { color:var(--dim); font-style:italic; padding:10px 0; }
   #task-out { margin-top:12px; font-family:Consolas, monospace; font-size:12px;
@@ -172,6 +178,17 @@ function fmtTime(ts) {
                                    second: "2-digit"});
 }
 
+// Outcome -> colour class. Anything unrecognised falls to the neutral grey
+// rather than borrowing a reassuring green: an unknown state is not a
+// success, and the audit panel must never imply one.
+function outClass(o) {
+  const s = String(o || "");
+  if (s === "executed" || s === "executed_modified") return "out-ok";
+  if (s === "pending" || s.startsWith("approved_pending")) return "out-wait";
+  if (s === "denied" || s === "failed") return "out-no";
+  return "out-skip";
+}
+
 // Compact one-line view of WHAT the action was. Already redacted server-side
 // before storage - this only shortens it for the table.
 function shortParams(p) {
@@ -231,7 +248,8 @@ async function refresh() {
               r.risk_breakdown.regulatory}/${r.risk_breakdown.confidence})${
             r.calibration_adjustment ? "<div class='risk'>calib: " +
             r.calibration_adjustment + "</div>" : ""}</td>
-        <td>${esc(r.final_outcome)}${
+        <td><span class="badge ${outClass(r.final_outcome)}">${
+            esc(r.final_outcome)}</span>${
             r.decided_by && r.decided_by !== "system"
               ? "<div class='risk'>by " + esc(r.decided_by) + "</div>" : ""}</td>
       </tr>`).join("") + "</table>";
