@@ -147,6 +147,18 @@ async function runTask() {
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({task})
     });
+    // A run with NO steps is a real outcome, not an empty screen: the model
+    // may decline the request outright (its own guardrail, before governance
+    // is ever consulted). Showing a blank box made that look like a failure.
+    if (!run.steps.length) {
+      const said = (run.transcript || []).join(" ").trim();
+      out.textContent =
+        "no tool calls proposed - the model declined or answered directly, "
+        + "so the governance engine had nothing to evaluate.\n\n"
+        + (said ? "model said: " + said : "(no message returned)");
+      refresh();
+      return;
+    }
     out.textContent = run.steps.map(s =>
       `${s.tool}  ->  ${s.route}` +
       (s.matched_override ? `  [override: ${s.matched_override}]` : "") +
